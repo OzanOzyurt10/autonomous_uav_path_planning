@@ -95,3 +95,72 @@ class TestSegmentGeometry:
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError):
             _segment_end((0.0, 0.0, 0.0), "X", 1.0, 1.0)
+
+
+class TestInterpolateAndSample:
+    def _path(self):
+        # rho=1: sola ceyrek tur, 2 birim duz, saga ceyrek tur
+        return DubinsPath(start=(0.0, 0.0, 0.0), word="LSR",
+                          lengths=(HALF_PI, 2.0, HALF_PI), rho=1.0)
+
+    def test_interpolate_at_zero_is_start(self):
+        p = self._path()
+        assert_pose_close(p.interpolate(0.0), p.start)
+
+    def test_known_waypoints(self):
+        p = self._path()
+        # birinci segmentin sonu: ceyrek tur sola
+        assert_pose_close(p.interpolate(HALF_PI), (1.0, 1.0, HALF_PI))
+        # ikinci segmentin sonu: 2 birim kuzeye duz
+        assert_pose_close(p.interpolate(HALF_PI + 2.0), (1.0, 3.0, HALF_PI))
+        # ucuncu segmentin sonu: ceyrek tur saga
+        assert_pose_close(p.end_pose(), (2.0, 4.0, 0.0))
+
+    def test_midpoint_of_first_segment(self):
+        p = self._path()
+        assert_pose_close(p.interpolate(HALF_PI / 2), (math.sin(HALF_PI / 2),
+                                                       1 - math.cos(HALF_PI / 2),
+                                                       HALF_PI / 2))
+
+    def test_interpolate_at_length_is_end_pose(self):
+        p = self._path()
+        assert_pose_close(p.interpolate(p.length), p.end_pose())
+
+    def test_interpolate_clamps_out_of_range(self):
+        p = self._path()
+        assert_pose_close(p.interpolate(-5.0), p.start)
+        assert_pose_close(p.interpolate(p.length + 5.0), p.end_pose())
+
+    def test_sample_endpoints(self):
+        p = self._path()
+        pts = p.sample(0.1)
+        assert_pose_close(pts[0], p.start)
+        assert_pose_close(pts[-1], p.end_pose())
+
+    def test_sample_spacing_never_exceeds_step(self):
+        p = self._path()
+        step = 0.1
+        pts = p.sample(step)
+        assert len(pts) > 1
+        for a, b in zip(pts, pts[1:]):
+            assert math.hypot(b[0] - a[0], b[1] - a[1]) <= step + 1e-9
+
+    def test_sample_is_monotonic_along_path(self):
+        p = self._path()
+        pts = p.sample(0.25)
+        # ardisik noktalar hep ileri gitmeli, geri donmemeli
+        total = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
+        assert total <= p.length + 1e-9
+
+    def test_sample_rejects_nonpositive_step(self):
+        p = self._path()
+        with pytest.raises(ValueError):
+            p.sample(0.0)
+        with pytest.raises(ValueError):
+            p.sample(-1.0)
+
+    def test_sample_of_zero_length_path(self):
+        p = DubinsPath(start=(1.0, 2.0, 0.5), word="LSL", lengths=(0.0, 0.0, 0.0), rho=1.0)
+        pts = p.sample(0.1)
+        assert len(pts) == 1
+        assert_pose_close(pts[0], p.start)
