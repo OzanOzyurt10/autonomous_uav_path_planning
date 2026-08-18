@@ -833,7 +833,8 @@ Her alt grafikte:
 
 - [ ] **Adım 2: Çalıştır ve şekli incele — CLAUDE**
 
-Çalıştır: `./venv/Scripts/python.exe notebooks/dubins_demo.py`
+Çalıştır: `./venv/Scripts/python.exe -m notebooks.dubins_demo`
+(`-m` sart: dosya yoluyla calistirinca proje koku sys.path'e girmez)
 Beklenen: `results/dubins_words.png` oluşur; geçerli kelimelerin hepsi
 başlangıçtan hedefe gider, dönüş yayları eşit yarıçaplı görünür.
 
