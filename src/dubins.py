@@ -1,20 +1,4 @@
-"""Fixed-wing IHA icin 2D Dubins yolu hesabi.
-
-Dubins yolu, minimum donus yaricapi rho ile kisitlanmis bir aracin iki poz
-arasindaki en kisa yoludur ve daima uc parcadan olusur: her parca ya rho
-yaricapli bir yay (sola "L" / saga "R") ya da duz bir cizgidir ("S").
-
-Koordinat sozlesmesi:
-    Pose = (x, y, yaw)
-    - ENU cercevesi: x dogu, y kuzey
-    - yaw radyan, CCW pozitif, x ekseninden olculur
-    - Havacilik heading'i (kuzeyden CW) bu modulun disinda donusturulur
-
-Referans:
-    Shkel, A. M., & Lumelsky, V. (2001). Classification of the Dubins set.
-    Robotics and Autonomous Systems, 34(4), 179-202.
-"""
-
+#Shkel & Lumelsky Yaklaşımı Kullanılarak Üretilmiştir.
 import math
 from dataclasses import dataclass
 
@@ -23,22 +7,7 @@ Pose = tuple[float, float, float]
 
 @dataclass(frozen=True)
 class DubinsPath:
-    """Cozulmus bir Dubins yolu.
-
-    Alanlar:
-        start: Yolun basladigi poz.
-        word: Segment tipleri, uc harf. "LSL", "RSR", "LSR", "RSL",
-            "RLR" veya "LRL".
-        lengths: Uc segmentin yay uzunlugu, **metre**. i'inci eleman
-            word'un i'inci harfine karsilik gelir. Kanonik cozuculer
-            normalize deger dondurur; buraya konmadan once rho ile
-            carpilmalidir.
-        rho: Donus yaricapi, metre.
-
-    Nesne degistirilemez (frozen): RRT* agacinda binlerce yol saklanacak
-    ve birinin sessizce degismesi maliyet muhasebesini bozar.
-    """
-
+    
     start: Pose
     word: str
     lengths: tuple[float, float, float]  # Segmentlerin uzunluğu (metre)
@@ -46,7 +15,6 @@ class DubinsPath:
 
     @property
     def length(self) -> float:
-        """Yolun toplam uzunlugu (metre)."""
         return self.lengths[0] + self.lengths[1] + self.lengths[2]
 
     def interpolate(self, s: float) -> Pose:
@@ -65,19 +33,10 @@ class DubinsPath:
         return pose
 
     def end_pose(self) -> Pose:
-        """Yolun bittigi poz."""
         return self.interpolate(self.length)
 
     def sample(self, step: float) -> list[Pose]:
-        """Yolu step araliklarla orneklenmis poz listesine cevirir.
-
-        Ilk eleman daima start, son eleman daima son pozdur; ardisik
-        noktalar arasindaki mesafe step'i asmaz. Sifir uzunluklu yol icin
-        tek elemanli liste doner.
-
-        Raises:
-            ValueError: step pozitif degilse.
-        """
+       
         if step <= 0:
             raise ValueError(f"step pozitif olmali, verilen: {step}")
 
@@ -90,24 +49,11 @@ class DubinsPath:
 
 
 def _mod2pi(theta: float) -> float:
-    """Aciyi [0, 2*pi) araligina indirger.
-
-    Python'un % operatoru bolenin isaretini aldigi icin negatif girdide de
-    pozitif sonuc doner; math.fmod bunu yapmaz.
-    """
     theta = theta % (2 * math.pi)
     return theta
 
 
 def _segment_end(pose: Pose, mode: str, s: float, rho: float) -> Pose:
-    """pose'dan baslayip mode tipinde s metre ilerledikten sonraki poz.
-
-    mode: "S" duz, "L" sola yay, "R" saga yay. rho donus yaricapi.
-    Donen yaw normalize edilmez; interpolate bunu zincirleme cagiriyor.
-
-    Raises:
-        ValueError: mode taninmiyorsa.
-    """
     x, y, psi = pose
     if mode == "S":
         psi2 = psi
@@ -128,3 +74,22 @@ def _segment_end(pose: Pose, mode: str, s: float, rho: float) -> Pose:
         raise ValueError(f"bilinmeyen segment tipi: {mode}")
 
     return (x2, y2, psi2)
+
+def _to_canonical(start: Pose, goal: Pose, rho: float) -> tuple[float, float, float]:
+    """ d: Dönüş Yariçapi Cinsinden iki poz arasi mesafe
+        # alpha: Başlangiç heading'inin, bağlanti doğrultusuna göre açisi
+        # beta: Hedef heading'inin, ayni doğrultuya göre açisi"""
+    start_x, start_y, start_yaw = start
+    goal_x, goal_y, goal_yaw = goal
+    dx    = goal_x - start_x
+    dy    = goal_y - start_y
+    D     = math.hypot(dx, dy)
+    d     = D / rho
+    theta = _mod2pi(math.atan2(dy, dx))
+    alpha = _mod2pi(start_yaw - theta)
+    beta  = _mod2pi(goal_yaw  - theta)
+    
+    return (d,alpha,beta)
+ 
+                          
+

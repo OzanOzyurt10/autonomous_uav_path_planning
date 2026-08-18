@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from src.dubins import DubinsPath, _mod2pi, _segment_end
+from src.dubins import DubinsPath, _mod2pi, _segment_end, _to_canonical
 
 ANGLES = [-10.0, -math.pi, -0.1, 0.0, 0.1, math.pi, 7.0, 100.0]
 HALF_PI = math.pi / 2
@@ -164,3 +164,55 @@ class TestInterpolateAndSample:
         pts = p.sample(0.1)
         assert len(pts) == 1
         assert_pose_close(pts[0], p.start)
+
+
+class TestCanonicalTransform:
+    def test_aligned_along_x_axis(self):
+        d, alpha, beta = _to_canonical((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), 2.0)
+        assert math.isclose(d, 2.0)
+        assert math.isclose(alpha, 0.0, abs_tol=1e-12)
+        assert math.isclose(beta, 0.0, abs_tol=1e-12)
+
+    def test_headings_measured_from_connecting_line(self):
+        # baslangictan hedefe dogru kuzeye gidiliyor; ikisi de dogu'ya bakiyor
+        # -> baglanti dogrultusu pi/2, iki aci da -pi/2 yani 3pi/2
+        d, alpha, beta = _to_canonical((0.0, 0.0, 0.0), (0.0, 3.0, 0.0), 1.0)
+        assert math.isclose(d, 3.0)
+        assert math.isclose(alpha, 3 * math.pi / 2, abs_tol=1e-9)
+        assert math.isclose(beta, 3 * math.pi / 2, abs_tol=1e-9)
+
+    def test_rotation_invariance(self):
+        rot = math.radians(40)
+
+        def rotate(p):
+            x, y, yaw = p
+            return (x * math.cos(rot) - y * math.sin(rot),
+                    x * math.sin(rot) + y * math.cos(rot),
+                    yaw + rot)
+
+        base = _to_canonical((0.0, 0.0, 0.3), (5.0, 2.0, 1.1), 1.5)
+        turned = _to_canonical(rotate((0.0, 0.0, 0.3)), rotate((5.0, 2.0, 1.1)), 1.5)
+        for a, b in zip(base, turned):
+            diff = _mod2pi(a - b)
+            assert min(diff, 2 * math.pi - diff) < 1e-9
+
+    def test_translation_invariance(self):
+        base = _to_canonical((0.0, 0.0, 0.3), (5.0, 2.0, 1.1), 1.5)
+        moved = _to_canonical((10.0, -7.0, 0.3), (15.0, -5.0, 1.1), 1.5)
+        for a, b in zip(base, moved):
+            assert math.isclose(a, b, abs_tol=1e-12)
+
+    def test_d_scales_inversely_with_rho(self):
+        d1, _, _ = _to_canonical((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), 1.0)
+        d2, _, _ = _to_canonical((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), 2.0)
+        assert math.isclose(d1, 10.0)
+        assert math.isclose(d2, 5.0)
+
+    def test_angles_are_normalized(self):
+        _, alpha, beta = _to_canonical((0.0, 0.0, -3.0), (1.0, 1.0, 9.0), 1.0)
+        assert 0.0 <= alpha < 2 * math.pi
+        assert 0.0 <= beta < 2 * math.pi
+
+    def test_coincident_positions_give_zero_d(self):
+        d, _, _ = _to_canonical((2.0, 2.0, 0.0), (2.0, 2.0, 1.0), 1.0)
+        assert d == 0.0
