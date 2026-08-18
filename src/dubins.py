@@ -24,7 +24,7 @@ Pose = tuple[float, float, float]
 _EPS = 1e-12
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) #obje oluştuktan sonra değerler değişemiyor
 class DubinsPath:
     """Cozulmus bir Dubins yolu.
 
@@ -38,8 +38,6 @@ class DubinsPath:
             carpilmalidir.
         rho: Donus yaricapi, metre.
 
-    Nesne degistirilemez (frozen): RRT* agacinda binlerce yol saklanacak
-    ve birinin sessizce degismesi maliyet muhasebesini bozar.
     """
 
     start: Pose
@@ -68,7 +66,6 @@ class DubinsPath:
         return pose
 
     def end_pose(self) -> Pose:
-        """Yolun bittigi poz."""
         return self.interpolate(self.length)
 
     def sample(self, step: float) -> list[Pose]:
@@ -93,11 +90,6 @@ class DubinsPath:
 
 
 def _mod2pi(theta: float) -> float:
-    """Aciyi [0, 2*pi) araligina indirger.
-
-    Python'un % operatoru bolenin isaretini aldigi icin negatif girdide de
-    pozitif sonuc doner; math.fmod bunu yapmaz.
-    """
     theta = theta % (2 * math.pi)
     return theta
 
@@ -151,12 +143,6 @@ def _to_canonical(start: Pose, goal: Pose, rho: float) -> tuple[float, float, fl
 
 
 def _safe_sqrt(value: float) -> float | None:
-    """Karekok alir; kelime gecersizse None doner.
-
-    Uc durum var. Matematiksel olarak tam sifir olmasi gereken bir deger
-    kayan noktada -4e-16 gibi cikabilir; ona bakip kelimeyi elemek var olan
-    bir yolu atmak olur. Bu yuzden kucuk negatifler sifira kirpilir.
-    """
     if value < -_EPS:
         return None
     if value < 0.0:
@@ -165,11 +151,7 @@ def _safe_sqrt(value: float) -> float | None:
 
 
 def _lsl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
-    """Sola don, duz git, sola don.
-
-    Normalize (t, p, q) doner: t ve q radyan donus acilari, p rho birimi
-    duz mesafe. Kelime geometrik olarak imkansizsa None.
-    """
+    """Sola don, duz git, sola don."""
     sa = math.sin(alpha)
     sb = math.sin(beta)
     ca = math.cos(alpha)
@@ -188,11 +170,7 @@ def _lsl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
 
 
 def _rsr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
-    """Saga don, duz git, saga don.
-
-    Normalize (t, p, q) doner: t ve q radyan donus acilari, p rho birimi
-    duz mesafe. Kelime geometrik olarak imkansizsa None.
-    """
+    """Saga don, duz git, saga don."""
     sa = math.sin(alpha)
     sb = math.sin(beta)
     ca = math.cos(alpha)
@@ -211,11 +189,7 @@ def _rsr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
 
 
 def _lsr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
-    """Sola don, duz git, saga don.
-
-    Normalize (t, p, q) doner: t ve q radyan donus acilari, p rho birimi
-    duz mesafe. Kelime geometrik olarak imkansizsa None.
-    """
+    """Sola don, duz git, saga don."""
     sa = math.sin(alpha)
     sb = math.sin(beta)
     ca = math.cos(alpha)
@@ -233,11 +207,7 @@ def _lsr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
 
 
 def _rsl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
-    """Saga don, duz git, sola don.
-
-    Normalize (t, p, q) doner: t ve q radyan donus acilari, p rho birimi
-    duz mesafe. Kelime geometrik olarak imkansizsa None.
-    """
+    """Saga don, duz git, sola don. """
     sa = math.sin(alpha)
     sb = math.sin(beta)
     ca = math.cos(alpha)
@@ -257,11 +227,7 @@ def _rsl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
 
 
 def _rlr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
-    """Saga don, sola don, saga don.
-
-    Uc segment de yay; normalize (t, p, q) ucu de radyandir. Yalnizca
-    d < 4 iken gecerlidir, aksi halde None.
-    """
+    """Saga don, sola don, saga don."""
     sa = math.sin(alpha)
     sb = math.sin(beta)
     ca = math.cos(alpha)
@@ -279,11 +245,7 @@ def _rlr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
 
 
 def _lrl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
-    """Sola don, saga don, sola don.
-
-    Uc segment de yay; normalize (t, p, q) ucu de radyandir. Yalnizca
-    d < 4 iken gecerlidir, aksi halde None.
-    """
+    """Sola don, saga don, sola don."""
     sa = math.sin(alpha)
     sb = math.sin(beta)
     ca = math.cos(alpha)
@@ -352,8 +314,6 @@ def shortest_path(start: Pose, goal: Pose, rho: float) -> DubinsPath:
 
 def path_length(start: Pose, goal: Pose, rho: float) -> float:
     """En kisa Dubins yolunun uzunlugu (metre).
-
-    RRT* icin maliyet metrigi. Yolun kendisi gerekmiyorsa bunu kullan.
 
     Raises:
         ValueError: rho pozitif degilse.
