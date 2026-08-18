@@ -308,3 +308,55 @@ _SOLVERS = {
     "RLR": _rlr,
     "LRL": _lrl,
 }
+
+
+def all_paths(start: Pose, goal: Pose, rho: float) -> list[DubinsPath]:
+    """start'tan goal'a giden tum gecerli Dubins yollarini dondurur.
+
+    Alti kelimenin her biri denenir; geometrik olarak imkansiz olanlar
+    listeye girmez. Liste en az bir eleman icerir.
+
+    Raises:
+        ValueError: rho pozitif degilse.
+    """
+    if rho <= 0:
+        raise ValueError(f"rho pozitif olmali, verilen: {rho}")
+
+    d, alpha, beta = _to_canonical(start, goal, rho)
+    paths = []
+    for word, solver in _SOLVERS.items():
+        result = solver(d, alpha, beta)
+        if result is None:
+            continue
+        # Cozuculer normalize deger dondurur; DubinsPath metre bekler.
+        lengths = tuple(x * rho for x in result)
+        paths.append(DubinsPath(start, word, lengths, rho))
+    return paths
+
+
+def shortest_path(start: Pose, goal: Pose, rho: float) -> DubinsPath:
+    """start'tan goal'a giden en kisa Dubins yolu.
+
+    Raises:
+        ValueError: rho pozitif degilse.
+        RuntimeError: hicbir kelime gecerli degilse. rho > 0 iken Dubins
+            teoremi geregi olmamalidir.
+    """
+    paths = all_paths(start, goal, rho)
+    if not paths:
+        raise RuntimeError(
+            f"hicbir Dubins kelimesi gecerli degil: "
+            f"start={start}, goal={goal}, rho={rho}")
+    return min(paths, key=lambda p: p.length)
+
+
+def path_length(start: Pose, goal: Pose, rho: float) -> float:
+    """En kisa Dubins yolunun uzunlugu (metre).
+
+    RRT* icin maliyet metrigi. Yolun kendisi gerekmiyorsa bunu kullan.
+
+    Raises:
+        ValueError: rho pozitif degilse.
+        RuntimeError: hicbir kelime gecerli degilse.
+    """
+    return shortest_path(start, goal, rho).length

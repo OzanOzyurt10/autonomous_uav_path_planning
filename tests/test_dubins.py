@@ -1,11 +1,13 @@
 """src/dubins.py icin testler."""
 
 import math
+import random
 
 import pytest
 
 from src.dubins import (DubinsPath, _mod2pi, _segment_end, _SOLVERS,
-                        _to_canonical)
+                        _to_canonical, all_paths, path_length,
+                        shortest_path)
 
 ANGLES = [-10.0, -math.pi, -0.1, 0.0, 0.1, math.pi, 7.0, 100.0]
 HALF_PI = math.pi / 2
@@ -320,3 +322,99 @@ class TestCCCWords:
 
     def test_all_six_solvers_registered(self):
         assert set(_SOLVERS) == {"LSL", "RSR", "LSR", "RSL", "RLR", "LRL"}
+
+
+def random_poses(seed, n, span=20.0):
+    rng = random.Random(seed)
+    for _ in range(n):
+        yield ((rng.uniform(-span, span), rng.uniform(-span, span),
+                rng.uniform(0, 2 * math.pi)),
+               (rng.uniform(-span, span), rng.uniform(-span, span),
+                rng.uniform(0, 2 * math.pi)))
+
+
+class TestPublicAPI:
+    @pytest.mark.parametrize("bad_rho", [0.0, -1.0])
+    def test_rho_must_be_positive(self, bad_rho):
+        for fn in (all_paths, shortest_path, path_length):
+            with pytest.raises(ValueError):
+                fn((0.0, 0.0, 0.0), (1.0, 1.0, 0.0), bad_rho)
+
+    def test_all_paths_returns_distinct_valid_words(self):
+        paths = all_paths((0.0, 0.0, 0.0), (5.0, 3.0, 1.0), 2.0)
+        assert 1 <= len(paths) <= 6
+        assert all(p.word in _SOLVERS for p in paths)
+        assert len({p.word for p in paths}) == len(paths)
+
+    def test_all_paths_carries_start_and_rho(self):
+        start, goal, rho = (1.0, -2.0, 0.4), (5.0, 3.0, 1.0), 2.0
+        for path in all_paths(start, goal, rho):
+            assert path.start == start
+            assert path.rho == rho
+
+    def test_shortest_is_minimum_of_all(self):
+        for start, goal in random_poses(seed=1, n=50):
+            best = shortest_path(start, goal, 2.0)
+            assert math.isclose(best.length,
+                                min(p.length for p in all_paths(start, goal, 2.0)),
+                                rel_tol=1e-12)
+
+    def test_path_length_matches_shortest_path(self):
+        for start, goal in random_poses(seed=2, n=50):
+            assert math.isclose(path_length(start, goal, 2.0),
+                                shortest_path(start, goal, 2.0).length,
+                                rel_tol=1e-12)
+
+    def test_endpoint_reconstruction(self):
+        """Kritik test: cozulen yolun ucu hedefe oturmali."""
+        for rho in (0.5, 1.0, 3.7):
+            for start, goal in random_poses(seed=3, n=60):
+                path = shortest_path(start, goal, rho)
+                assert_pose_close(path.end_pose(), goal, tol=1e-6)
+
+    def test_all_valid_words_reach_goal(self):
+        for start, goal in random_poses(seed=4, n=30):
+            for path in all_paths(start, goal, 1.5):
+                assert_pose_close(path.end_pose(), goal, tol=1e-6)
+
+    def test_length_at_least_euclidean_distance(self):
+        for start, goal in random_poses(seed=5, n=60):
+            dist = math.hypot(goal[0] - start[0], goal[1] - start[1])
+            assert path_length(start, goal, 2.0) >= dist - 1e-9
+
+    def test_straight_line_case_is_exact(self):
+        path = shortest_path((0.0, 0.0, 0.0), (12.0, 0.0, 0.0), 1.0)
+        assert "S" in path.word
+        assert math.isclose(path.length, 12.0, abs_tol=1e-9)
+
+    def test_identical_poses_give_zero_length(self):
+        pose = (3.0, -4.0, 1.2)
+        assert math.isclose(path_length(pose, pose, 2.0), 0.0, abs_tol=1e-9)
+
+    def test_scale_invariance(self):
+        k = 3.0
+        for start, goal in random_poses(seed=6, n=30):
+            scaled_start = (start[0] * k, start[1] * k, start[2])
+            scaled_goal = (goal[0] * k, goal[1] * k, goal[2])
+            assert math.isclose(path_length(scaled_start, scaled_goal, 2.0 * k),
+                                k * path_length(start, goal, 2.0),
+                                rel_tol=1e-9)
+
+    def test_curvature_never_exceeds_limit(self):
+        rho, step = 2.0, 0.05
+        for start, goal in random_poses(seed=7, n=20):
+            pts = shortest_path(start, goal, rho).sample(step)
+            for a, b in zip(pts, pts[1:]):
+                ds = math.hypot(b[0] - a[0], b[1] - a[1])
+                if ds < 1e-12:
+                    continue
+                dyaw = _mod2pi(b[2] - a[2])
+                dyaw = min(dyaw, 2 * math.pi - dyaw)
+                # yay uzunlugu kiristen buyuk oldugu icin bu ust sinir muhafazakar
+                assert dyaw / ds <= 1.0 / rho + 1e-3
+
+    def test_sampled_path_starts_and_ends_correctly(self):
+        for start, goal in random_poses(seed=8, n=20):
+            pts = shortest_path(start, goal, 1.0).sample(0.1)
+            assert_pose_close(pts[0], start)
+            assert_pose_close(pts[-1], goal)
