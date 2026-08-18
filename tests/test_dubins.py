@@ -4,7 +4,8 @@ import math
 
 import pytest
 
-from src.dubins import DubinsPath, _mod2pi, _segment_end, _to_canonical
+from src.dubins import (DubinsPath, _mod2pi, _segment_end, _SOLVERS,
+                        _to_canonical)
 
 ANGLES = [-10.0, -math.pi, -0.1, 0.0, 0.1, math.pi, 7.0, 100.0]
 HALF_PI = math.pi / 2
@@ -216,3 +217,61 @@ class TestCanonicalTransform:
     def test_coincident_positions_give_zero_d(self):
         d, _, _ = _to_canonical((2.0, 2.0, 0.0), (2.0, 2.0, 1.0), 1.0)
         assert d == 0.0
+
+
+CSC_WORDS = ["LSL", "RSR", "LSR", "RSL"]
+
+POSE_PAIRS = [
+    ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)),
+    ((0.0, 0.0, 0.0), (4.0, 3.0, 1.2)),
+    ((0.0, 0.0, 2.0), (-6.0, 5.0, -1.0)),
+    ((1.0, -2.0, 0.5), (1.5, -1.5, 3.0)),
+    ((0.0, 0.0, 0.0), (0.5, 0.0, math.pi)),
+]
+
+
+def build_path(word, start, goal, rho):
+    """Kanonik cozucuyu cagirip DubinsPath kurar; kelime gecersizse None."""
+    d, alpha, beta = _to_canonical(start, goal, rho)
+    result = _SOLVERS[word](d, alpha, beta)
+    if result is None:
+        return None
+    t, p, q = result
+    return DubinsPath(start=start, word=word,
+                      lengths=(t * rho, p * rho, q * rho), rho=rho)
+
+
+class TestCSCWords:
+    @pytest.mark.parametrize("word", CSC_WORDS)
+    @pytest.mark.parametrize("start,goal", POSE_PAIRS)
+    def test_reaches_goal_when_valid(self, word, start, goal):
+        path = build_path(word, start, goal, 2.0)
+        if path is None:
+            pytest.skip(f"{word} bu poz cifti icin gecersiz")
+        assert_pose_close(path.end_pose(), goal, tol=1e-6)
+
+    @pytest.mark.parametrize("word", CSC_WORDS)
+    @pytest.mark.parametrize("start,goal", POSE_PAIRS)
+    def test_segment_lengths_nonnegative(self, word, start, goal):
+        path = build_path(word, start, goal, 2.0)
+        if path is None:
+            pytest.skip(f"{word} bu poz cifti icin gecersiz")
+        assert all(seg >= -1e-12 for seg in path.lengths)
+
+    @pytest.mark.parametrize("word", ["LSL", "RSR"])
+    def test_straight_line_is_exactly_distance(self, word):
+        path = build_path(word, (0.0, 0.0, 0.0), (7.0, 0.0, 0.0), 1.0)
+        assert path is not None
+        assert math.isclose(path.length, 7.0, abs_tol=1e-9)
+
+    @pytest.mark.parametrize("word", CSC_WORDS)
+    def test_middle_segment_is_the_straight_one(self, word):
+        # CSC'de ikinci segment duz; normalize p degeri mesafeyle uyumlu olmali
+        result = _SOLVERS[word](5.0, 0.0, 0.0)
+        if result is None:
+            pytest.skip(f"{word} gecersiz")
+        _, p, _ = result
+        assert p >= 0.0
+
+    def test_four_csc_solvers_registered(self):
+        assert {"LSL", "RSR", "LSR", "RSL"} <= set(_SOLVERS)
