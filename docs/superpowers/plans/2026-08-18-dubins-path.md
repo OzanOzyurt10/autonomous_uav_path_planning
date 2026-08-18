@@ -639,7 +639,7 @@ tmp = (6 - d*d + 2*c_ab + 2*d*(-sa + sb)) / 8
 abs(tmp) > 1        -> None
 p = _mod2pi(2*pi - acos(tmp))
 t = _mod2pi(-alpha - atan2(ca - cb, d + sa - sb) + p/2)
-q = _mod2pi(_mod2pi(beta) - alpha + _mod2pi(2*p))
+q = _mod2pi(beta - alpha - t + p)
 ```
 
 CSC'den farkı: burada `acos` var, `sqrt` yok — geçersizlik koşulu da bu yüzden

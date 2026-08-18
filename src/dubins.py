@@ -224,8 +224,7 @@ def _lsr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
 
     p_sq = -2 + d*d + 2*c_ab + 2*d*(sa + sb)
     p = _safe_sqrt(p_sq)
-    if p is None:
-        return None
+    if p is None: return None
     tmp = math.atan2(-ca - cb, d + sa + sb) - math.atan2(-2.0, p)
     t   = _mod2pi(-alpha + tmp)
     q   = _mod2pi(-_mod2pi(beta) + tmp)
@@ -256,4 +255,56 @@ def _rsl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | No
     return (t, p, q)
 
 
-_SOLVERS = {"LSL": _lsl, "RSR": _rsr, "LSR": _lsr, "RSL": _rsl}
+
+def _rlr(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
+    """Saga don, sola don, saga don.
+
+    Uc segment de yay; normalize (t, p, q) ucu de radyandir. Yalnizca
+    d < 4 iken gecerlidir, aksi halde None.
+    """
+    sa = math.sin(alpha)
+    sb = math.sin(beta)
+    ca = math.cos(alpha)
+    c_ab = math.cos(alpha - beta)
+    cb = math.cos(beta)
+
+    tmp = (6 - d*d + 2*c_ab + 2*d*(sa - sb)) / 8
+    if abs(tmp) > 1.0:
+        return None
+    p = _mod2pi(2*math.pi - math.acos(tmp))
+    t = _mod2pi(alpha - math.atan2(ca - cb, d - sa + sb) + p/2)
+    q = _mod2pi(alpha - beta - t + p)
+
+    return (t, p, q)
+
+
+def _lrl(d: float, alpha: float, beta: float) -> tuple[float, float, float] | None:
+    """Sola don, saga don, sola don.
+
+    Uc segment de yay; normalize (t, p, q) ucu de radyandir. Yalnizca
+    d < 4 iken gecerlidir, aksi halde None.
+    """
+    sa = math.sin(alpha)
+    sb = math.sin(beta)
+    ca = math.cos(alpha)
+    c_ab = math.cos(alpha - beta)
+    cb = math.cos(beta)
+
+    tmp = (6 - d*d + 2*c_ab + 2*d*(-sa + sb)) / 8
+    if abs(tmp) > 1.0:
+        return None
+    p = _mod2pi(2*math.pi - math.acos(tmp))
+    t = _mod2pi(-alpha - math.atan2(ca - cb, d + sa - sb) + p/2)
+    q = _mod2pi(beta - alpha - t + p)
+
+    return (t, p, q)
+
+
+_SOLVERS = {
+    "LSL": _lsl,
+    "RSR": _rsr,
+    "LSR": _lsr,
+    "RSL": _rsl,
+    "RLR": _rlr,
+    "LRL": _lrl,
+}

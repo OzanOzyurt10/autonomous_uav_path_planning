@@ -275,3 +275,48 @@ class TestCSCWords:
 
     def test_four_csc_solvers_registered(self):
         assert {"LSL", "RSR", "LSR", "RSL"} <= set(_SOLVERS)
+
+
+CCC_WORDS = ["RLR", "LRL"]
+
+CCC_POSE_PAIRS = [
+    ((0.0, 0.0, 0.0), (1.0, 0.0, math.pi)),
+    ((0.0, 0.0, 0.0), (0.0, 0.0, 2.0)),
+    ((0.0, 0.0, 0.0), (2.0, 1.0, 3.0)),
+    ((0.0, 0.0, 1.0), (-1.0, 0.5, -2.0)),
+]
+
+
+class TestCCCWords:
+    @pytest.mark.parametrize("word", CCC_WORDS)
+    @pytest.mark.parametrize("start,goal", CCC_POSE_PAIRS)
+    def test_reaches_goal_when_valid(self, word, start, goal):
+        path = build_path(word, start, goal, 1.0)
+        if path is None:
+            pytest.skip(f"{word} bu poz cifti icin gecersiz")
+        assert_pose_close(path.end_pose(), goal, tol=1e-6)
+
+    @pytest.mark.parametrize("word", CCC_WORDS)
+    def test_invalid_when_far_apart(self, word):
+        # CCC yalnizca d < 4 icin gecerlidir
+        assert _SOLVERS[word](10.0, 0.0, 0.0) is None
+
+    @pytest.mark.parametrize("word", CCC_WORDS)
+    def test_middle_arc_is_major(self, word):
+        # CCC'de orta yayin donus acisi pi'den buyuk olmalidir
+        result = _SOLVERS[word](1.0, 0.0, math.pi)
+        if result is None:
+            pytest.skip(f"{word} gecersiz")
+        _, p, _ = result
+        assert p > math.pi - 1e-9
+
+    @pytest.mark.parametrize("word", CCC_WORDS)
+    def test_segment_lengths_nonnegative(self, word):
+        for start, goal in CCC_POSE_PAIRS:
+            path = build_path(word, start, goal, 1.0)
+            if path is None:
+                continue
+            assert all(seg >= -1e-12 for seg in path.lengths)
+
+    def test_all_six_solvers_registered(self):
+        assert set(_SOLVERS) == {"LSL", "RSR", "LSR", "RSL", "RLR", "LRL"}
