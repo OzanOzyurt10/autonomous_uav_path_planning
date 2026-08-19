@@ -155,13 +155,25 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
 
 
 def _neighbour_radius(n: int, gamma: float, cap: float) -> float:
-    """RRT* komsuluk yaricapi; agac buyudukce kuculur.
-
-    Us 1/3 cunku konfigurasyon uzayi SE(2) uc boyutlu (x, y, yaw). Formul
-    Oklid uzayi icin ispatlanmis, Dubins'e uygulanmasi yaklasiklik.
-    n <= 1 iken log 0 verecegi icin dogrudan cap donuyor.
-    """
+    """RRT* komsuluk yaricapi; agac buyudukce kuculur."""
     if n <= 1:
         return cap
 
     return min(gamma * (math.log(n) / n) ** (1 / 3), cap)
+
+def _neighbours(nodes: list[Node], pose: Pose, radius: float) -> list[int]:
+    """Yaricap icindeki dugumlerin indekslerini doner; Oklid ile eler.
+
+    Eleme kayipsiz: bir Dubins yolu duz cizgiden kisa olamaz, yani Oklid
+    mesafesi yaricapi asan dugumun Dubins mesafesi de asar. Ucuz hypot ile
+    suzup pahali Dubins'i yalnizca kalanlara uyguluyoruz.
+    """
+    neighbour_list = []
+    x, y, _ = pose
+    for i in range(len(nodes)):
+        x_n, y_n, _ = nodes[i].pose
+        if math.hypot(x_n - x, y_n - y) <= radius:
+            neighbour_list.append(i)
+    return neighbour_list
+
+

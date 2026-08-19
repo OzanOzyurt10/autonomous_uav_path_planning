@@ -8,7 +8,8 @@ import pytest
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
 from src.rrt_star import (Node, RRTResult, _extract_path, _nearest, _sample,
-                          _neighbour_radius, _try_connect, plan)
+                          _neighbour_radius, _neighbours, _try_connect,
+                          plan)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -427,3 +428,34 @@ class TestNeighbourRadius:
         small = _neighbour_radius(500, 30.0, 1000.0)
         large = _neighbour_radius(500, 60.0, 1000.0)
         assert math.isclose(large, 2 * small)
+
+
+class TestNeighbours:
+    def _line(self):
+        """x ekseninde 0, 10, 20, 30 metrede dort dugum."""
+        return [_node((float(10 * k), 0.0, 0.0)) for k in range(4)]
+
+    def test_returns_indices_within_radius(self):
+        assert _neighbours(self._line(), (0.0, 0.0, 0.0), 15.0) == [0, 1]
+
+    def test_boundary_node_is_included(self):
+        # tam 10.0 metredeki dugum 10.0 yaricapta disarida kalmamali
+        assert 1 in _neighbours(self._line(), (0.0, 0.0, 0.0), 10.0)
+
+    def test_zero_radius_gives_only_coincident(self):
+        assert _neighbours(self._line(), (0.0, 0.0, 0.0), 0.0) == [0]
+
+    def test_large_radius_gives_all(self):
+        assert _neighbours(self._line(), (0.0, 0.0, 0.0), 1000.0) == [0, 1, 2, 3]
+
+    def test_ignores_yaw(self):
+        """Oklid on eleme yalnizca konuma bakar; yaw farki elemez."""
+        nodes = [_node((0.0, 0.0, 0.0)), _node((0.0, 0.0, math.pi))]
+        assert _neighbours(nodes, (0.0, 0.0, 0.0), 1.0) == [0, 1]
+
+    def test_returns_indices_not_nodes(self):
+        result = _neighbours(self._line(), (0.0, 0.0, 0.0), 1000.0)
+        assert all(isinstance(i, int) for i in result)
+
+    def test_empty_when_all_far(self):
+        assert _neighbours(self._line(), (500.0, 500.0, 0.0), 5.0) == []
