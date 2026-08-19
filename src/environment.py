@@ -52,11 +52,7 @@ class Environment:
         obstacles: Dairesel engeller. Bos olabilir.
         clearance: Her engel yaricapina eklenen emniyet payi, metre. GPS
             hatasi, ruzgar suruklemesi ve kanat acikligi icin. Negatif olamaz.
-
-    Liste degil tuple kullanilmasi kasitli: frozen=True nesnenin degismezligini
-    vaat ediyor, ama icinde liste olsaydi disaridan append edilebilirdi.
     """
-
     bounds: tuple[float, float, float, float]
     obstacles: tuple[Obstacle, ...]
     clearance: float
@@ -72,13 +68,23 @@ class Environment:
                 f"bounds (xmin, ymin, xmax, ymax) siralamasi bozuk: {self.bounds}")
 
     def is_inside_bounds(self, point: Point | Pose) -> bool:
-        """Nokta harita dikdortgeninin icinde mi.
+        """Nokta harita dikdortgeninin icinde mi."""
+        x_min, y_min, x_max, y_max = self.bounds
+        return x_min <= point[0] <= x_max and y_min <= point[1] <= y_max
 
-        Sinir uzeri ICERIDE sayilir. Obstacle.contains'te sinir uzeri
-        carpisma sayiliyordu; celiski degil, ayni kuralin iki yuzu — her iki
-        durumda da sinir cizgisi kisitlayici tarafa dahil.
+    def is_free(self, point: Point | Pose) -> bool:
+        """Nokta serbest mi: harita icinde ve hicbir engele girmiyor.
+
+        Engeller clearance ile sisirilmis halleriyle degerlendirilir.
 
         point uc elemanli da olabilir; yalnizca ilk iki bileseni okunur.
         """
-        x_min, y_min, x_max, y_max = self.bounds
-        return x_min <= point[0] <= x_max and y_min <= point[1] <= y_max
+        if not self.is_inside_bounds(point):
+            return False
+
+        for obstacle in self.obstacles:
+            if obstacle.contains(point, self.clearance):
+                return False
+
+        return True
+                    

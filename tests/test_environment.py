@@ -112,3 +112,51 @@ class TestBounds:
 
     def test_accepts_pose_ignoring_yaw(self):
         assert self._env().is_inside_bounds((50.0, 30.0, 2.0)) is True
+
+
+class TestIsFree:
+    def test_empty_map_everything_inside_is_free(self):
+        env = Environment(BOUNDS, (), 0.0)
+        for point in [(0.0, 0.0), (50.0, 30.0), (100.0, 60.0)]:
+            assert env.is_free(point) is True
+
+    def test_outside_bounds_is_not_free(self):
+        env = Environment(BOUNDS, (), 0.0)
+        assert env.is_free((150.0, 30.0)) is False
+
+    def test_inside_obstacle_is_not_free(self):
+        env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 10.0),), 0.0)
+        assert env.is_free((50.0, 30.0)) is False
+        assert env.is_free((55.0, 30.0)) is False
+
+    def test_outside_obstacle_is_free(self):
+        env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 10.0),), 0.0)
+        assert env.is_free((70.0, 30.0)) is True
+
+    def test_obstacle_boundary_is_not_free(self):
+        env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 10.0),), 0.0)
+        assert env.is_free((60.0, 30.0)) is False
+
+    def test_clearance_makes_previously_free_point_blocked(self):
+        obstacles = (Obstacle(50.0, 30.0, 10.0),)
+        assert Environment(BOUNDS, obstacles, 0.0).is_free((62.0, 30.0)) is True
+        assert Environment(BOUNDS, obstacles, 5.0).is_free((62.0, 30.0)) is False
+
+    def test_any_obstacle_blocks(self):
+        env = Environment(BOUNDS, (
+            Obstacle(20.0, 20.0, 5.0),
+            Obstacle(50.0, 30.0, 5.0),
+            Obstacle(80.0, 40.0, 5.0),
+        ), 0.0)
+        assert env.is_free((50.0, 30.0)) is False   # ikinciye giriyor
+        assert env.is_free((80.0, 40.0)) is False   # ucuncuye giriyor
+        assert env.is_free((5.0, 50.0)) is True     # hicbirine girmiyor
+
+    def test_point_inside_obstacle_but_outside_bounds(self):
+        # iki sebep birden: yine de False
+        env = Environment(BOUNDS, (Obstacle(105.0, 30.0, 10.0),), 0.0)
+        assert env.is_free((105.0, 30.0)) is False
+
+    def test_accepts_pose_ignoring_yaw(self):
+        env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 10.0),), 0.0)
+        assert env.is_free((50.0, 30.0, 1.2)) is False
