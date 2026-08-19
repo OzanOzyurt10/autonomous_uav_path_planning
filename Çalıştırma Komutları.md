@@ -4,6 +4,8 @@ dubins_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.dubin
 
 dubins_benchmark çalıştırmak için : venv\Scripts\python.exe -m notebooks.dubins_benchmark
 
+environment_demo çalıştırmak için : venv\Scripts\python.exe -m notebooks.environment_demo
+
 
 
 
