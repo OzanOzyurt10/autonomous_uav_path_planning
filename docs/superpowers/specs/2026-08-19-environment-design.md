@@ -100,9 +100,22 @@ içine düşmeyebilir ("tünelleme").
    tam olarak budur.
 
 2. **`suggested_step()`.** En küçük şişirilmiş engel yarıçapının yarısını
-   döndürür. Engel yoksa harita kenarının onda birini döndürür. Adım bundan
-   küçük tutulursa, bir engelin içinden geçen yol en az bir örnek nokta
-   bırakmadan çıkamaz.
+   döndürür. Engel yoksa harita kenarının onda birini döndürür.
+
+   Bu adım **mutlak garanti vermez**. İlk taslakta "engelin içinden geçen
+   yol en az çapı kadar mesafe kateder, dolayısıyla atlanamaz" diye
+   gerekçelendirilmişti; bu yanlıştır — yol engelin kenarından teğet
+   geçebilir ve kat ettiği kiriş keyfi kadar kısa olabilir.
+
+   Verdiği garanti daha zayıf ama yeterli: kaçırılan miktar adımla orantılı
+   kalır, `clearance` onu soğurur. Uygulama sonrası ölçüm (rho=8 m,
+   clearance=2 m, adım 4 m, 500 rastgele yol): 1 yolda kaba kontrol
+   "serbest" derken ince kontrol "çarpıyor" dedi. O yol **gerçek engele
+   değmedi**, emniyet payının 0.11 m'sini yedi. Adım yarıya inince
+   uyuşmazlık sıfırlandı.
+
+   Sonuç: `suggested_step()` bir başlangıç değeridir, güvenlik kritik bir
+   kullanımda daha küçük seçilmelidir.
 
 Bu sınır docstring'de açıkça yazılır. Yaklaşık olduğu bilgisi saklanacak bir
 şey değil, gerekçesiyle birlikte savunulan bir tasarım tercihidir.

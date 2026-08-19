@@ -120,22 +120,7 @@ class Environment:
 
         return (min_obs.radius + self.clearance) / 2
 
-    def random_free_pose(self, rng: random.Random,
-                         max_attempts: int = 1000) -> Pose:
-        """Serbest uzaydan rastgele bir poz uretir.
-
-        Reddetme ornekelemesi (rejection sampling): harita dikdortgeninden
-        rastgele nokta uret, serbest degilse at ve yeniden dene. Engellerin
-        seklinden bagimsiz calisir; tek bildigi is_free.
-
-        rng disaridan alinir ki kosu tekrarlanabilir olsun — ayni tohum ayni
-        diziyi verir. Rastgele algoritmalarda hata ayiklamanin tek yolu bu.
-
-        Raises:
-            RuntimeError: max_attempts denemede serbest poz bulunamazsa.
-                while True yerine sinirli deneme kullanilmasinin sebebi bu:
-                dolu bir haritada program donmak yerine acik hata verir.
-        """
+    def random_free_pose(self, rng: random.Random,max_attempts: int = 1000) -> Pose:
         x_min, y_min, x_max, y_max = self.bounds
         for _ in range(max_attempts):
             x = rng.uniform(x_min, x_max)
