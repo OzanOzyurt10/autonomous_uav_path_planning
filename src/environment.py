@@ -11,6 +11,7 @@ Koordinat sozlesmesi (dubins.py ile ayni):
 """
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 Pose = tuple[float, float, float]   # (x, y, yaw)
@@ -42,6 +43,7 @@ class Obstacle:
         distance = math.hypot(point[0] - self.x, point[1] - self.y)
         return distance <= self.radius + clearance
 
+
 @dataclass(frozen=True)
 class Environment:
     """Planlama ortami: harita sinirlari, engeller ve emniyet payi.
@@ -53,6 +55,7 @@ class Environment:
         clearance: Her engel yaricapina eklenen emniyet payi, metre. GPS
             hatasi, ruzgar suruklemesi ve kanat acikligi icin. Negatif olamaz.
     """
+
     bounds: tuple[float, float, float, float]
     obstacles: tuple[Obstacle, ...]
     clearance: float
@@ -87,4 +90,40 @@ class Environment:
                 return False
 
         return True
-                    
+
+    def is_path_free(self, points: Iterable[Point | Pose]) -> bool:
+        """Verilen noktalarin hepsi serbest mi. Bos liste icin True.
+
+        DIKKAT: Bu kontrol YAKLASIKTIR. Iki ornek noktasi arasinda yol bir
+        engelin kenarindan teget gecip hicbir nokta birakmadan cikabilir
+        ("tunelleme"). Iki savunma var: clearance engeli sisirdigi icin teget
+        gecisler tampon bolgeye denk gelir, ve suggested_step() adimi engel
+        boyutuna gore secer. Risk sinirlanir, sifirlanmaz.
+        """
+        for point in points:
+            if not self.is_free(point):
+                return False
+        return True
+
+    def suggested_step(self) -> float:
+        """Ornekleme icin onerilen adim boyu, metre.
+
+        Engel varsa en kucuk sisirilmis yaricapin yarisi, yoksa haritanin
+        kisa kenarinin onda biri.
+
+        Gerekce: bir engelin icinden gecen yol en az capi kadar mesafe
+        kateder. Adim yaricapin yarisindan kucukse o mesafeye en az bir
+        ornek nokta duser, yani engel atlanmaz.
+        """
+        x_min, y_min, x_max, y_max = self.bounds
+        if not self.obstacles:
+            step = min(x_max - x_min, y_max - y_min)
+            return step / 10
+
+        min_obs = None
+        for obstacle in self.obstacles:
+            if min_obs is None or min_obs.radius > obstacle.radius:
+                min_obs = obstacle
+
+        return (min_obs.radius + self.clearance) / 2
+

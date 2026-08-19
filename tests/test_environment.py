@@ -160,3 +160,62 @@ class TestIsFree:
     def test_accepts_pose_ignoring_yaw(self):
         env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 10.0),), 0.0)
         assert env.is_free((50.0, 30.0, 1.2)) is False
+
+
+class TestIsPathFree:
+    def _env(self):
+        return Environment(BOUNDS, (Obstacle(50.0, 30.0, 10.0),), 0.0)
+
+    def test_clear_path_is_free(self):
+        points = [(float(x), 5.0) for x in range(0, 101, 5)]
+        assert self._env().is_path_free(points) is True
+
+    def test_path_through_obstacle_is_blocked(self):
+        points = [(float(x), 30.0) for x in range(0, 101, 5)]
+        assert self._env().is_path_free(points) is False
+
+    def test_single_blocked_point_is_enough(self):
+        points = [(5.0, 5.0), (50.0, 30.0), (95.0, 55.0)]
+        assert self._env().is_path_free(points) is False
+
+    def test_path_leaving_bounds_is_blocked(self):
+        points = [(50.0, 5.0), (150.0, 5.0)]
+        assert self._env().is_path_free(points) is False
+
+    def test_empty_list_is_free(self):
+        # bos kume: kontrol edilecek bir sey yok
+        assert self._env().is_path_free([]) is True
+
+    def test_accepts_poses(self):
+        poses = [(5.0, 5.0, 0.0), (10.0, 5.0, 0.5)]
+        assert self._env().is_path_free(poses) is True
+
+
+class TestSuggestedStep:
+    def test_half_of_smallest_inflated_radius(self):
+        env = Environment(BOUNDS, (
+            Obstacle(20.0, 20.0, 8.0),
+            Obstacle(50.0, 30.0, 3.0),   # en kucuk
+            Obstacle(80.0, 40.0, 5.0),
+        ), 0.0)
+        assert math.isclose(env.suggested_step(), 1.5)
+
+    def test_clearance_counts_toward_radius(self):
+        env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 3.0),), 1.0)
+        assert math.isclose(env.suggested_step(), 2.0)
+
+    def test_no_obstacles_returns_positive_value(self):
+        assert Environment(BOUNDS, (), 0.0).suggested_step() > 0.0
+
+    def test_no_obstacles_scales_with_map(self):
+        small = Environment((0.0, 0.0, 10.0, 10.0), (), 0.0).suggested_step()
+        big = Environment((0.0, 0.0, 1000.0, 1000.0), (), 0.0).suggested_step()
+        assert big > small
+
+    def test_step_is_small_enough_to_catch_obstacle(self):
+        # onerilen adimla orneklenen bir dogru, engeli atlamamali
+        env = Environment(BOUNDS, (Obstacle(50.0, 30.0, 4.0),), 0.0)
+        step = env.suggested_step()
+        n = int(100.0 / step) + 1
+        points = [(i * step, 30.0) for i in range(n)]
+        assert env.is_path_free(points) is False
