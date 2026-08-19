@@ -8,7 +8,7 @@ import pytest
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
 from src.rrt_star import (Node, RRTResult, _extract_path, _nearest, _sample,
-                          _try_connect)
+                          _try_connect, plan)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -241,3 +241,165 @@ class TestExtractPath:
     def test_middle_node_skips_later_edges(self):
         nodes, goal_edge, expected = self._chain()
         assert _extract_path(nodes, 1, goal_edge) == [expected[0], goal_edge]
+
+
+class TestPlanValidation:
+    @pytest.mark.parametrize("bad_rho", [0.0, -1.0])
+    def test_bad_rho_raises(self, bad_rho):
+        with pytest.raises(ValueError):
+            plan(START, GOAL, FREE_ENV, bad_rho, rng=random.Random(1))
+
+    @pytest.mark.parametrize("bad_iters", [0, -5])
+    def test_bad_max_iterations_raises(self, bad_iters):
+        with pytest.raises(ValueError):
+            plan(START, GOAL, FREE_ENV, RHO, max_iterations=bad_iters,
+                 rng=random.Random(1))
+
+    @pytest.mark.parametrize("bad_bias", [-0.1, 1.1])
+    def test_bad_goal_bias_raises(self, bad_bias):
+        with pytest.raises(ValueError):
+            plan(START, GOAL, FREE_ENV, RHO, goal_bias=bad_bias,
+                 rng=random.Random(1))
+
+    @pytest.mark.parametrize("bad_step", [0.0, -1.0])
+    def test_bad_step_raises(self, bad_step):
+        with pytest.raises(ValueError):
+            plan(START, GOAL, FREE_ENV, RHO, step=bad_step,
+                 rng=random.Random(1))
+
+    def test_blocked_start_raises(self):
+        blocked = (50.0, 30.0, 0.0)      # duvarin tam ortasi
+        with pytest.raises(ValueError):
+            plan(blocked, GOAL, WALL_ENV, RHO, rng=random.Random(1))
+
+    def test_blocked_goal_raises(self):
+        blocked = (50.0, 30.0, 0.0)
+        with pytest.raises(ValueError):
+            plan(START, blocked, WALL_ENV, RHO, rng=random.Random(1))
+
+    def test_out_of_bounds_start_raises(self):
+        with pytest.raises(ValueError):
+            plan((150.0, 30.0, 0.0), GOAL, FREE_ENV, RHO, rng=random.Random(1))
+
+
+class TestPlanFreeSpace:
+    def test_finds_route_in_first_iteration(self):
+        # engelsiz ortamda her baglanti basarili; ilk iterasyonda biter
+        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+                      rng=random.Random(1))
+        assert result.found is True
+        assert result.iterations == 1
+
+    def test_route_reaches_goal(self):
+        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+                      rng=random.Random(1))
+        assert_pose_close(result.edges[0].start, START)
+        assert_pose_close(result.edges[-1].end_pose(), GOAL)
+
+    def test_goal_bias_one_gives_direct_route(self):
+        """goal_bias=1.0 ile ilk ornek dogrudan hedeftir.
+
+        O zaman kok -> hedef tek anlamli kenar olur; ardindan hedeften
+        hedefe sifir uzunluklu bir kapanis kenari eklenir. Toplam maliyet
+        dogrudan Dubins mesafesine esit cikar.
+        """
+        result = plan(START, GOAL, FREE_ENV, RHO, goal_bias=1.0, step=STEP,
+                      rng=random.Random(1))
+        assert result.found is True
+        assert math.isclose(result.cost, path_length(START, GOAL, RHO),
+                            abs_tol=1e-9)
+
+    def test_cost_equals_sum_of_edges(self):
+        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+                      rng=random.Random(1))
+        assert math.isclose(result.cost, sum(e.length for e in result.edges))
+
+    def test_tree_contains_root(self):
+        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+                      rng=random.Random(1))
+        assert result.tree[0].pose == START
+        assert result.tree[0].parent is None
+        assert result.tree[0].cost == 0.0
+
+
+class TestPlanWithObstacle:
+    def _result(self, seed=1):
+        return plan(START, GOAL, WALL_ENV, RHO, max_iterations=3000,
+                    step=STEP, rng=random.Random(seed))
+
+    def test_finds_a_route(self):
+        assert self._result().found is True
+
+    def test_route_needs_more_than_one_edge(self):
+        # dogrudan yol engelden geciyordu, yani dolasmak zorunda
+        assert len(self._result().edges) >= 2
+
+    def test_every_edge_is_collision_free_at_fine_step(self):
+        """Kritik test: planlayici STEP ile karar verdi, biz 0.05 ile bakiyoruz."""
+        for edge in self._result().edges:
+            assert WALL_ENV.is_path_free(edge.sample(0.05)) is True
+
+    def test_route_starts_at_start_and_ends_at_goal(self):
+        edges = self._result().edges
+        assert_pose_close(edges[0].start, START)
+        assert_pose_close(edges[-1].end_pose(), GOAL)
+
+    def test_route_is_continuous(self):
+        edges = self._result().edges
+        for first, second in zip(edges, edges[1:]):
+            assert_pose_close(first.end_pose(), second.start)
+
+    def test_cost_equals_sum_of_edges(self):
+        result = self._result()
+        assert math.isclose(result.cost, sum(e.length for e in result.edges))
+
+    def test_cost_is_at_least_direct_dubins_distance(self):
+        result = self._result()
+        assert result.cost >= path_length(START, GOAL, RHO) - 1e-9
+
+    def test_curvature_never_exceeds_limit(self):
+        for edge in self._result().edges:
+            points = edge.sample(0.05)
+            for a, b in zip(points, points[1:]):
+                ds = math.hypot(b[0] - a[0], b[1] - a[1])
+                if ds < 1e-12:
+                    continue
+                dyaw = (b[2] - a[2]) % (2 * math.pi)
+                dyaw = min(dyaw, 2 * math.pi - dyaw)
+                assert dyaw / ds <= 1.0 / RHO + 1e-3
+
+    def test_same_seed_gives_same_result(self):
+        first = self._result(seed=7)
+        second = self._result(seed=7)
+        assert first.iterations == second.iterations
+        assert math.isclose(first.cost, second.cost)
+        assert len(first.edges) == len(second.edges)
+
+    def test_tree_parents_are_valid_indices(self):
+        tree = self._result().tree
+        for i, node in enumerate(tree):
+            if node.parent is None:
+                assert i == 0
+            else:
+                assert 0 <= node.parent < i
+
+
+class TestPlanUnsolvable:
+    def _result(self):
+        return plan(START, CAGE_GOAL, CAGE_ENV, RHO, max_iterations=300,
+                    step=0.3, rng=random.Random(1))
+
+    def test_reports_not_found(self):
+        assert self._result().found is False
+
+    def test_uses_full_budget(self):
+        assert self._result().iterations == 300
+
+    def test_edges_empty_and_cost_infinite(self):
+        result = self._result()
+        assert result.edges == []
+        assert result.cost == math.inf
+
+    def test_tree_is_returned_for_debugging(self):
+        # agac bos donmemeli; nereye kadar yayildigini gorebilmeliyiz
+        assert len(self._result().tree) >= 1
