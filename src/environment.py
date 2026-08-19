@@ -8,17 +8,6 @@ Koordinat sozlesmesi (dubins.py ile ayni):
     - Aci gerekmedigi icin burada yalniz (x, y) ile ilgilenilir; uc elemanli
       bir poz verilirse ilk iki bileseni kullanilir
 
-NEDEN dubins.py IMPORT EDILMIYOR:
-    Bu modul bilerek Dubins'i tanimaz. Yol carpisma kontrolu bir DubinsPath
-    degil, orneklenmis nokta listesi alir:
-
-        env.is_path_free(path.sample(step))
-
-    Boylece (1) iki modul birbirinden bagimsiz test edilebilir, (2) adim boyu
-    secimi cagiranin sorumlulugunda kalir, (3) ileride Dubins yerine baska bir
-    yol tipi denenirse bu dosya degismez. Pose takma adi bu yuzden burada
-    yeniden tanimlanir; kolaylik olsun diye dubins'ten import etmek bu
-    bagimsizligi bozar.
 """
 
 import math
@@ -48,14 +37,48 @@ class Obstacle:
 
     def contains(self, point: Point | Pose, clearance: float = 0.0) -> bool:
         """Nokta bu engelin (sisirilmis) icinde mi.
-
-        clearance emniyet payi: yaricaba eklenir, yani engeli sisirir.
-        Verilmezse sifir kullanilir.
-
-        Sinir uzeri carpisma sayilir (<=, < degil) — muhafazakar taraf
-        dogru taraftir.
-
-        point uc elemanli da olabilir; yalnizca ilk iki bileseni okunur.
+        clearance emniyet payi olarak kullanilir
         """
         distance = math.hypot(point[0] - self.x, point[1] - self.y)
         return distance <= self.radius + clearance
+
+@dataclass(frozen=True)
+class Environment:
+    """Planlama ortami: harita sinirlari, engeller ve emniyet payi.
+
+    Alanlar:
+        bounds: (xmin, ymin, xmax, ymax), metre. Planlamanin yapilacagi
+            dikdortgen alan. RRT* rastgele pozu buradan ureteccek.
+        obstacles: Dairesel engeller. Bos olabilir.
+        clearance: Her engel yaricapina eklenen emniyet payi, metre. GPS
+            hatasi, ruzgar suruklemesi ve kanat acikligi icin. Negatif olamaz.
+
+    Liste degil tuple kullanilmasi kasitli: frozen=True nesnenin degismezligini
+    vaat ediyor, ama icinde liste olsaydi disaridan append edilebilirdi.
+    """
+
+    bounds: tuple[float, float, float, float]
+    obstacles: tuple[Obstacle, ...]
+    clearance: float
+
+    def __post_init__(self):
+        if self.clearance < 0:
+            raise ValueError(
+                f"clearance negatif olamaz, verilen: {self.clearance}")
+
+        x_min, y_min, x_max, y_max = self.bounds
+        if x_min >= x_max or y_min >= y_max:
+            raise ValueError(
+                f"bounds (xmin, ymin, xmax, ymax) siralamasi bozuk: {self.bounds}")
+
+    def is_inside_bounds(self, point: Point | Pose) -> bool:
+        """Nokta harita dikdortgeninin icinde mi.
+
+        Sinir uzeri ICERIDE sayilir. Obstacle.contains'te sinir uzeri
+        carpisma sayiliyordu; celiski degil, ayni kuralin iki yuzu — her iki
+        durumda da sinir cizgisi kisitlayici tarafa dahil.
+
+        point uc elemanli da olabilir; yalnizca ilk iki bileseni okunur.
+        """
+        x_min, y_min, x_max, y_max = self.bounds
+        return x_min <= point[0] <= x_max and y_min <= point[1] <= y_max
