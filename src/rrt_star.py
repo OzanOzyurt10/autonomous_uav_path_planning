@@ -86,22 +86,7 @@ def _try_connect(env: Environment, from_pose: Pose, to_pose: Pose,
 
 
 def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
-    """Hedefe en yakin dugumun indeksini doner (dugumun kendisini degil).
-
-    Mesafe agactan hedefe yonunde olculur: path_length(dugum, target).
-    Yon onemli cunku Dubins mesafesi simetrik degil; (0,0,0)->(0,3,pi/2)
-    14.86 m iken tersi 11.66 m.
-
-    Oklid mesafesi kullanilmiyor. Yakin ama ters yone bakan bir dugume
-    baglanmak koca bir donus gerektirir; Dubins bunu hesaba katar, hypot
-    katmaz.
-
-    Esitlikte ilk gelen kazanir (karsilastirma < ile yapiliyor).
-
-    Bu fonksiyon planlayicinin en sicak dongusu: her yinelemede agacin
-    tamami taraniyor. O yuzden dugum basina yalnizca bir path_length
-    cagrisi var, sonucu dist'te tutuluyor.
-    """
+    """Hedefe en yakin dugumun indeksini doner (dugumun kendisini degil)."""
     min_index = None
     min_dist = None
     for i in range(len(nodes)):
@@ -110,3 +95,25 @@ def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
             min_index = i
             min_dist = dist
     return min_index
+
+
+def _sample(env: Environment, goal: Pose, rng: random.Random,
+            goal_bias: float) -> Pose:
+    """goal_bias olasilikla hedefi, aksi halde rastgele serbest bir poz doner.
+
+    Hedef biasing agaci hedefe dogru ceker. Olmadan RRT serbest alanda
+    amacsizca yayilir ve hedefe rastgele denk gelmeyi bekler; yakinsama cok
+    yavaslar. Tipik deger 0.05: yinelemelerin %5'i dogrudan hedefe uzanmayi
+    dener, %95'i kesfe ayrilir. Bias'i cok yukseltmek de zararli, cunku agac
+    hep ayni tikali dogrultuyu dener ve engelin etrafindan dolasmayi
+    kesfedemez.
+
+    Karsilastirma < ile yapiliyor, <= ile degil: rng.random() [0.0, 1.0)
+    araligindan uretiyor, dolayisiyla goal_bias=0.0 iken hicbir sayi kucuk
+    olamaz ve hedef hic donmez. goal_bias=1.0 iken ise her sayi kucuktur,
+    hep hedef doner.
+    """
+    if rng.random() < goal_bias:
+        return goal
+    return env.random_free_pose(rng)
+

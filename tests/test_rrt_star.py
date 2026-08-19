@@ -7,7 +7,7 @@ import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
-from src.rrt_star import Node, RRTResult, _nearest, _try_connect
+from src.rrt_star import Node, RRTResult, _nearest, _sample, _try_connect
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -165,3 +165,34 @@ class TestNearest:
     def test_ties_pick_first(self):
         nodes = [_node((0.0, 0.0, 0.0)), _node((0.0, 0.0, 0.0))]
         assert _nearest(nodes, (10.0, 0.0, 0.0), RHO) == 0
+
+
+class TestSample:
+    def test_full_bias_always_returns_goal(self):
+        rng = random.Random(1)
+        for _ in range(50):
+            assert _sample(FREE_ENV, GOAL, rng, 1.0) == GOAL
+
+    def test_zero_bias_never_returns_goal(self):
+        rng = random.Random(2)
+        for _ in range(50):
+            assert _sample(FREE_ENV, GOAL, rng, 0.0) != GOAL
+
+    def test_zero_bias_returns_free_pose(self):
+        rng = random.Random(3)
+        for _ in range(50):
+            assert WALL_ENV.is_free(_sample(WALL_ENV, GOAL, rng, 0.0)) is True
+
+    def test_partial_bias_mixes(self):
+        rng = random.Random(4)
+        samples = [_sample(FREE_ENV, GOAL, rng, 0.5) for _ in range(200)]
+        goal_count = sum(1 for s in samples if s == GOAL)
+        assert 60 < goal_count < 140       # 0.5 etrafinda genis bir bant
+
+    def test_same_seed_gives_same_sequence(self):
+        first = [_sample(FREE_ENV, GOAL, random.Random(9), 0.3) for _ in range(1)]
+        second = [_sample(FREE_ENV, GOAL, random.Random(9), 0.3) for _ in range(1)]
+        assert first == second
+
+    def test_returns_three_element_pose(self):
+        assert len(_sample(FREE_ENV, GOAL, random.Random(5), 0.0)) == 3
