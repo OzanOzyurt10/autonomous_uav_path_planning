@@ -7,7 +7,7 @@ import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
-from src.rrt_star import Node, RRTResult
+from src.rrt_star import Node, RRTResult, _try_connect
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -80,3 +80,44 @@ class TestRRTResult:
         result = RRTResult(False, [], math.inf, 0, [])
         with pytest.raises(Exception):
             result.found = True
+
+
+class TestTryConnect:
+    def test_free_environment_returns_path(self):
+        path = _try_connect(FREE_ENV, START, GOAL, RHO, STEP)
+        assert path is not None
+        assert_pose_close(path.end_pose(), GOAL)
+
+    def test_returned_path_starts_at_from_pose(self):
+        path = _try_connect(FREE_ENV, START, GOAL, RHO, STEP)
+        assert path.start == START
+
+    def test_length_matches_dubins(self):
+        path = _try_connect(FREE_ENV, START, GOAL, RHO, STEP)
+        assert math.isclose(path.length, path_length(START, GOAL, RHO))
+
+    def test_blocked_returns_none(self):
+        # ortadaki duvar dogrudan yolu kesiyor
+        assert _try_connect(WALL_ENV, START, GOAL, RHO, STEP) is None
+
+    def test_detour_around_wall_is_allowed(self):
+        # duvarin ustunden dolasan iki parca temiz olmali
+        mid = (50.0, 56.0, 0.0)
+        assert _try_connect(WALL_ENV, START, mid, RHO, STEP) is not None
+        assert _try_connect(WALL_ENV, mid, GOAL, RHO, STEP) is not None
+
+    def test_returned_path_is_collision_free_at_fine_step(self):
+        # planlayici STEP ile karar veriyor; burada cok daha siki bakiyoruz
+        mid = (50.0, 56.0, 0.0)
+        path = _try_connect(WALL_ENV, START, mid, RHO, STEP)
+        assert path is not None
+        assert WALL_ENV.is_path_free(path.sample(0.05)) is True
+
+    def test_goal_outside_bounds_returns_none(self):
+        outside = (150.0, 30.0, 0.0)
+        assert _try_connect(FREE_ENV, START, outside, RHO, STEP) is None
+
+    def test_same_pose_connects(self):
+        path = _try_connect(FREE_ENV, START, START, RHO, STEP)
+        assert path is not None
+        assert math.isclose(path.length, 0.0, abs_tol=1e-9)

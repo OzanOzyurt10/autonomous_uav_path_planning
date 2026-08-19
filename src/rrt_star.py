@@ -63,3 +63,23 @@ class RRTResult:
     cost: float
     iterations: int
     tree: list[Node]
+
+
+def _try_connect(env: Environment, from_pose: Pose, to_pose: Pose,
+                 rho: float, step: float) -> DubinsPath | None:
+    """Iki poz arasinda gecerli bir kenar kurmaya calisir.
+
+    En kisa Dubins yolunu olusturur, step araligiyla ornekler ve carpisma
+    kontrolunden gecirir. Temizse yolu, degilse None doner.
+
+    Kenar gecerliliginin tek karar noktasi burasi: agaca giren her kenar
+    buradan geciyor, dolayisiyla carpisma kuralini degistirmek istersen
+    bakilacak tek yer bu fonksiyon.
+
+    Sinir kontrolu ayrica yazilmiyor; harita disina cikan bir yolun
+    orneklenen noktalarini env.is_free zaten eliyor.
+    """
+    path = shortest_path(from_pose, to_pose, rho)
+    if env.is_path_free(path.sample(step)):
+        return path
+    return None
