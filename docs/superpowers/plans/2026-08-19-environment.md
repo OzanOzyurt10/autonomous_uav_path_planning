@@ -46,7 +46,7 @@ Test: pytest 9.1.1. Çizim: matplotlib 3.11.1.
   - `Point = tuple[float, float]`
   - `Obstacle` — frozen dataclass, alanlar sırayla `x: float`, `y: float`,
     `radius: float`
-  - `Obstacle.contains(point, clearance=0.0) -> bool`
+  - `Obstacle.contains(point: Point | Pose, clearance: float = 0.0) -> bool`
 
 - [ ] **Adım 1: Başarısız testi yaz — CLAUDE**
 
@@ -170,7 +170,7 @@ git commit -m "Environment: dairesel engel gosterimi (Obstacle)"
     `bounds: tuple[float, float, float, float]`,
     `obstacles: tuple[Obstacle, ...]`,
     `clearance: float`
-  - `Environment.is_inside_bounds(point) -> bool`
+  - `Environment.is_inside_bounds(point: Point | Pose) -> bool`
 
 - [ ] **Adım 1: Başarısız testi yaz — CLAUDE**
 
@@ -299,7 +299,7 @@ git commit -m "Environment: harita sinirlari ve dogrulama"
 
 **Arayüz:**
 - Tüketir: `Obstacle.contains`, `Environment.is_inside_bounds`
-- Üretir: `Environment.is_free(point) -> bool`
+- Üretir: `Environment.is_free(point: Point | Pose) -> bool`
 
 - [ ] **Adım 1: Başarısız testi yaz — CLAUDE**
 
@@ -398,8 +398,8 @@ git commit -m "Environment: nokta serbest mi kontrolu (is_free)"
 **Arayüz:**
 - Tüketir: `Environment.is_free`
 - Üretir:
-  - `Environment.is_path_free(points) -> bool`
-  - `Environment.suggested_step() -> float`
+  - `Environment.is_path_free(points: Iterable[Point | Pose]) -> bool`
+  - `Environment.suggested_step(self) -> float`
 
 - [ ] **Adım 1: Başarısız testi yaz — CLAUDE**
 
@@ -522,7 +522,7 @@ git commit -m "Environment: yol carpisma kontrolu ve onerilen adim boyu"
 
 **Arayüz:**
 - Tüketir: `Environment.is_free`
-- Üretir: `Environment.random_free_pose(rng, max_attempts=1000) -> Pose`
+- Üretir: `Environment.random_free_pose(rng: random.Random, max_attempts: int = 1000) -> Pose`
 
 - [ ] **Adım 1: Başarısız testi yaz — CLAUDE**
 
