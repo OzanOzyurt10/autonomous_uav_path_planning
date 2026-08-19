@@ -99,21 +99,29 @@ def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
 
 def _sample(env: Environment, goal: Pose, rng: random.Random,
             goal_bias: float) -> Pose:
-    """goal_bias olasilikla hedefi, aksi halde rastgele serbest bir poz doner.
-
-    Hedef biasing agaci hedefe dogru ceker. Olmadan RRT serbest alanda
-    amacsizca yayilir ve hedefe rastgele denk gelmeyi bekler; yakinsama cok
-    yavaslar. Tipik deger 0.05: yinelemelerin %5'i dogrudan hedefe uzanmayi
-    dener, %95'i kesfe ayrilir. Bias'i cok yukseltmek de zararli, cunku agac
-    hep ayni tikali dogrultuyu dener ve engelin etrafindan dolasmayi
-    kesfedemez.
-
-    Karsilastirma < ile yapiliyor, <= ile degil: rng.random() [0.0, 1.0)
-    araligindan uretiyor, dolayisiyla goal_bias=0.0 iken hicbir sayi kucuk
-    olamaz ve hedef hic donmez. goal_bias=1.0 iken ise her sayi kucuktur,
-    hep hedef doner.
-    """
+    """goal_bias olasilikla hedefi, aksi halde rastgele serbest bir poz doner."""
     if rng.random() < goal_bias:
         return goal
     return env.random_free_pose(rng)
 
+def _extract_path(nodes: list[Node], index: int,
+                  goal_edge: DubinsPath) -> list[DubinsPath]:
+    """nodes[index]'ten koke uzanan zinciri gidis sirasinda kenar listesine cevirir.
+
+    Agac ebeveyn indeksleriyle tutuldugu icin zincir yalnizca yapraktan koke
+    dogru yurunebiliyor; toplanan kenarlar bu yuzden ucagin gidecegi siranin
+    tersinde birikiyor ve sonda ters cevriliyor.
+
+    goal_edge ters cevirme bittikten sonra ekleniyor: son kenar hedefe uzanan
+    kenar olmali. Once eklenseydi ters cevirme onu listenin basina atardi.
+
+    Kok dugumun path_from_parent'i None'dir ama listeye hic girmez; dongu
+    parent is None kosulunda zaten durur.
+    """
+    edges = []
+    while nodes[index].parent is not None:
+        edges.append(nodes[index].path_from_parent)
+        index = nodes[index].parent
+    edges.reverse()          # zincir yapraktan koke toplandi, gidis sirasina cevir
+    edges.append(goal_edge)
+    return edges

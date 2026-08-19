@@ -7,7 +7,8 @@ import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
-from src.rrt_star import Node, RRTResult, _nearest, _sample, _try_connect
+from src.rrt_star import (Node, RRTResult, _extract_path, _nearest, _sample,
+                          _try_connect)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -196,3 +197,47 @@ class TestSample:
 
     def test_returns_three_element_pose(self):
         assert len(_sample(FREE_ENV, GOAL, random.Random(5), 0.0)) == 3
+
+
+class TestExtractPath:
+    def _chain(self):
+        """Uc dugumluk zincir: A -> B -> C, ve C'den hedefe bir kenar."""
+        a = (0.0, 0.0, 0.0)
+        b = (20.0, 0.0, 0.0)
+        c = (40.0, 0.0, 0.0)
+        ab = shortest_path(a, b, RHO)
+        bc = shortest_path(b, c, RHO)
+        goal_edge = shortest_path(c, GOAL, RHO)
+        nodes = [
+            Node(a, None, 0.0, None),
+            Node(b, 0, ab.length, ab),
+            Node(c, 1, ab.length + bc.length, bc),
+        ]
+        return nodes, goal_edge, [ab, bc, goal_edge]
+
+    def test_returns_edges_in_travel_order(self):
+        nodes, goal_edge, expected = self._chain()
+        assert _extract_path(nodes, 2, goal_edge) == expected
+
+    def test_first_edge_starts_at_root(self):
+        nodes, goal_edge, _ = self._chain()
+        edges = _extract_path(nodes, 2, goal_edge)
+        assert edges[0].start == nodes[0].pose
+
+    def test_last_edge_is_goal_edge(self):
+        nodes, goal_edge, _ = self._chain()
+        assert _extract_path(nodes, 2, goal_edge)[-1] is goal_edge
+
+    def test_chain_is_continuous(self):
+        nodes, goal_edge, _ = self._chain()
+        edges = _extract_path(nodes, 2, goal_edge)
+        for first, second in zip(edges, edges[1:]):
+            assert_pose_close(first.end_pose(), second.start)
+
+    def test_from_root_gives_only_goal_edge(self):
+        nodes, goal_edge, _ = self._chain()
+        assert _extract_path(nodes, 0, goal_edge) == [goal_edge]
+
+    def test_middle_node_skips_later_edges(self):
+        nodes, goal_edge, expected = self._chain()
+        assert _extract_path(nodes, 1, goal_edge) == [expected[0], goal_edge]
