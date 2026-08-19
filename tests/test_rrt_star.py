@@ -1,5 +1,6 @@
 """src/rrt_star.py icin testler."""
 
+import functools
 import math
 import random
 
@@ -248,7 +249,8 @@ class TestPlanValidation:
     @pytest.mark.parametrize("bad_rho", [0.0, -1.0])
     def test_bad_rho_raises(self, bad_rho):
         with pytest.raises(ValueError):
-            plan(START, GOAL, FREE_ENV, bad_rho, rng=random.Random(1))
+            plan(START, GOAL, FREE_ENV, bad_rho, max_iterations=10,
+                 rng=random.Random(1))
 
     @pytest.mark.parametrize("bad_iters", [0, -5])
     def test_bad_max_iterations_raises(self, bad_iters):
@@ -260,63 +262,65 @@ class TestPlanValidation:
     def test_bad_goal_bias_raises(self, bad_bias):
         with pytest.raises(ValueError):
             plan(START, GOAL, FREE_ENV, RHO, goal_bias=bad_bias,
-                 rng=random.Random(1))
+                 max_iterations=10, rng=random.Random(1))
 
     @pytest.mark.parametrize("bad_step", [0.0, -1.0])
     def test_bad_step_raises(self, bad_step):
         with pytest.raises(ValueError):
             plan(START, GOAL, FREE_ENV, RHO, step=bad_step,
-                 rng=random.Random(1))
+                 max_iterations=10, rng=random.Random(1))
 
     def test_blocked_start_raises(self):
         blocked = (50.0, 30.0, 0.0)      # duvarin tam ortasi
         with pytest.raises(ValueError):
-            plan(blocked, GOAL, WALL_ENV, RHO, rng=random.Random(1))
+            plan(blocked, GOAL, WALL_ENV, RHO, max_iterations=10,
+                 rng=random.Random(1))
 
     def test_blocked_goal_raises(self):
         blocked = (50.0, 30.0, 0.0)
         with pytest.raises(ValueError):
-            plan(START, blocked, WALL_ENV, RHO, rng=random.Random(1))
+            plan(START, blocked, WALL_ENV, RHO, max_iterations=10,
+                 rng=random.Random(1))
 
     def test_out_of_bounds_start_raises(self):
         with pytest.raises(ValueError):
-            plan((150.0, 30.0, 0.0), GOAL, FREE_ENV, RHO, rng=random.Random(1))
+            plan((150.0, 30.0, 0.0), GOAL, FREE_ENV, RHO, max_iterations=10,
+                 rng=random.Random(1))
 
 
 class TestPlanFreeSpace:
-    def test_finds_route_in_first_iteration(self):
-        # engelsiz ortamda her baglanti basarili; ilk iterasyonda biter
+    def test_finds_route_immediately_when_stopping_early(self):
         result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
-                      rng=random.Random(1))
+                      rng=random.Random(1), stop_on_first_solution=True)
         assert result.found is True
         assert result.iterations == 1
 
+    def test_default_uses_full_budget(self):
+        result = plan(START, GOAL, FREE_ENV, RHO, max_iterations=40, step=STEP,
+                      rng=random.Random(1))
+        assert result.found is True
+        assert result.iterations == 40
+
     def test_route_reaches_goal(self):
-        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+        result = plan(START, GOAL, FREE_ENV, RHO, max_iterations=40, step=STEP,
                       rng=random.Random(1))
         assert_pose_close(result.edges[0].start, START)
         assert_pose_close(result.edges[-1].end_pose(), GOAL)
 
     def test_goal_bias_one_gives_direct_route(self):
-        """goal_bias=1.0 ile ilk ornek dogrudan hedeftir.
-
-        O zaman kok -> hedef tek anlamli kenar olur; ardindan hedeften
-        hedefe sifir uzunluklu bir kapanis kenari eklenir. Toplam maliyet
-        dogrudan Dubins mesafesine esit cikar.
-        """
         result = plan(START, GOAL, FREE_ENV, RHO, goal_bias=1.0, step=STEP,
-                      rng=random.Random(1))
+                      rng=random.Random(1), stop_on_first_solution=True)
         assert result.found is True
         assert math.isclose(result.cost, path_length(START, GOAL, RHO),
                             abs_tol=1e-9)
 
     def test_cost_equals_sum_of_edges(self):
-        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+        result = plan(START, GOAL, FREE_ENV, RHO, max_iterations=40, step=STEP,
                       rng=random.Random(1))
         assert math.isclose(result.cost, sum(e.length for e in result.edges))
 
     def test_tree_contains_root(self):
-        result = plan(START, GOAL, FREE_ENV, RHO, step=STEP,
+        result = plan(START, GOAL, FREE_ENV, RHO, max_iterations=40, step=STEP,
                       rng=random.Random(1))
         assert result.tree[0].pose == START
         assert result.tree[0].parent is None
@@ -326,7 +330,8 @@ class TestPlanFreeSpace:
 class TestPlanWithObstacle:
     def _result(self, seed=1):
         return plan(START, GOAL, WALL_ENV, RHO, max_iterations=3000,
-                    step=STEP, rng=random.Random(seed))
+                    step=STEP, rng=random.Random(seed),
+                    stop_on_first_solution=True)
 
     def test_finds_a_route(self):
         assert self._result().found is True
@@ -385,10 +390,15 @@ class TestPlanWithObstacle:
                 assert 0 <= node.parent < i
 
 
+@functools.lru_cache(maxsize=None)
+def _cage_result():
+    return plan(START, CAGE_GOAL, CAGE_ENV, RHO, max_iterations=300,
+                step=0.3, rng=random.Random(1))
+
+
 class TestPlanUnsolvable:
     def _result(self):
-        return plan(START, CAGE_GOAL, CAGE_ENV, RHO, max_iterations=300,
-                    step=0.3, rng=random.Random(1))
+        return _cage_result()
 
     def test_reports_not_found(self):
         assert self._result().found is False
@@ -521,3 +531,77 @@ class TestChooseParent:
         parent, edge = _choose_parent(FREE_ENV, nodes, GOAL, [1], RHO, STEP, fb)
         assert parent == 0
         assert edge is fb[1]
+
+
+class TestPlanRadiusValidation:
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_bad_radius_gamma_raises(self, bad):
+        with pytest.raises(ValueError):
+            plan(START, GOAL, FREE_ENV, RHO, radius_gamma=bad,
+                 max_iterations=10, rng=random.Random(1))
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_bad_radius_cap_raises(self, bad):
+        with pytest.raises(ValueError):
+            plan(START, GOAL, FREE_ENV, RHO, radius_cap=bad,
+                 max_iterations=10, rng=random.Random(1))
+
+
+@functools.lru_cache(maxsize=None)
+def _star_result(seed, iters):
+    """Ayni (seed, iters) icin tek kosu; testler arasinda paylasilir.
+
+    Her test metodu kendi kosusunu yapsaydi suite dakikalarca surerdi.
+    Testler sonucu yalnizca okuyor, paylasmak guvenli.
+    """
+    return plan(START, GOAL, WALL_ENV, RHO, max_iterations=iters,
+                step=STEP, rng=random.Random(seed))
+
+
+class TestPlanChooseParent:
+    def _star(self, seed=1, iters=400):
+        return _star_result(seed, iters)
+
+    def test_costs_are_consistent_with_edges(self):
+        """Her dugumun maliyeti ebeveyninkine kendi kenarini ekleyerek cikmali."""
+        tree = self._star().tree
+        for node in tree:
+            if node.parent is None:
+                continue
+            expected = tree[node.parent].cost + node.path_from_parent.length
+            assert math.isclose(node.cost, expected, abs_tol=1e-9)
+
+    def test_root_is_untouched(self):
+        root = self._star().tree[0]
+        assert root.parent is None
+        assert root.cost == 0.0
+        assert root.path_from_parent is None
+
+    def test_parent_chain_terminates_at_root(self):
+        tree = self._star().tree
+        for i in range(len(tree)):
+            seen = 0
+            while tree[i].parent is not None:
+                i = tree[i].parent
+                seen += 1
+                assert seen <= len(tree), "dongu var"
+            assert i == 0
+
+    def test_route_is_collision_free_at_fine_step(self):
+        for edge in self._star().edges:
+            assert WALL_ENV.is_path_free(edge.sample(0.05)) is True
+
+    def test_route_is_continuous(self):
+        edges = self._star().edges
+        for first, second in zip(edges, edges[1:]):
+            assert_pose_close(first.end_pose(), second.start)
+
+    def test_cost_equals_sum_of_edges(self):
+        result = self._star()
+        assert math.isclose(result.cost, sum(e.length for e in result.edges))
+
+    def test_best_goal_link_is_used(self):
+        """Butce boyunca birden fazla hedef baglantisi bulunur; en ucuzu secilmeli."""
+        result = self._star(iters=800)
+        cheap = self._star(iters=100)
+        assert result.cost <= cheap.cost + 1e-9

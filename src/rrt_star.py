@@ -46,11 +46,7 @@ class RRTResult:
 
 def _try_connect(env: Environment, from_pose: Pose, to_pose: Pose,
                  rho: float, step: float) -> DubinsPath | None:
-    """Iki poz arasinda gecerli bir kenar kurar; carpisirsa None doner.
-
-    Kenar gecerliliginin tek karar noktasi. Sinir kontrolu ayrica yok,
-    harita disina cikan orneklem noktalarini env.is_free zaten eliyor.
-    """
+    """Iki poz arasinda gecerli bir kenar kurar; carpisirsa None doner."""
     path = shortest_path(from_pose, to_pose, rho)
     if env.is_path_free(path.sample(step)):
         return path
@@ -79,11 +75,7 @@ def _sample(env: Environment, goal: Pose, rng: random.Random,
 
 def _extract_path(nodes: list[Node], index: int,
                   goal_edge: DubinsPath) -> list[DubinsPath]:
-    """Zinciri koke kadar geri takip edip gidis sirasinda kenar listesi verir.
-
-    Zincir yalnizca yapraktan koke yurunebildigi icin kenarlar ters birikiyor;
-    sonda cevriliyor. goal_edge cevirmeden sonra ekleniyor ki sonda kalsin.
-    """
+    """Zinciri koke kadar geri takip edip gidis sirasinda kenar listesi verir."""
     edges = []
     while nodes[index].parent is not None:
         edges.append(nodes[index].path_from_parent)
@@ -93,73 +85,13 @@ def _extract_path(nodes: list[Node], index: int,
     return edges
 
 
-def plan(start: Pose, goal: Pose, env: Environment, rho: float,
-         max_iterations: int = 5000, goal_bias: float = 0.05,
-         step: float | None = None, rng: random.Random | None = None,
-         stop_on_first_solution: bool = True) -> RRTResult:
-    """start'tan goal'a carpismasiz bir Dubins rotasi arar.
-
-    Her yinelemede bir poz orneklenir, en yakin dugumden oraya kenar kurulur,
-    temizse agac buyur; ardindan yeni dugumden hedefe uzanilmaya calisilir.
-
-    step None ise env.suggested_step(), rng None ise tohumsuz uretilir.
-
-    stop_on_first_solution=False bu asamada rotayi iyilestirmez; parametre
-    ikinci asamadaki rewire icin simdiden imzada duruyor.
-    """
-    if rho <= 0.0:
-        raise ValueError(f"rho pozitif olmali: {rho}")
-    if max_iterations <= 0:
-        raise ValueError(f"max_iterations pozitif olmali: {max_iterations}")
-    if goal_bias < 0.0 or goal_bias > 1.0:
-        raise ValueError(f"goal_bias 0.0-1.0 araliginda olmali: {goal_bias}")
-    if step is not None and step <= 0.0:
-        raise ValueError(f"step pozitif olmali: {step}")
-    if not env.is_free(start):
-        raise ValueError(f"baslangic pozu engelli veya harita disinda: {start}")
-    if not env.is_free(goal):
-        raise ValueError(f"hedef pozu engelli veya harita disinda: {goal}")
-
-    if step is None:
-        step = env.suggested_step()
-    if rng is None:
-        rng = random.Random()
-
-    nodes = [Node(start, None, 0.0, None)]
-    best = None          # bulunan cozum: (edges, cost, iteration)
-
-    for iteration in range(1, max_iterations + 1):
-        target = _sample(env, goal, rng, goal_bias)
-        i = _nearest(nodes, target, rho)
-        edge = _try_connect(env, nodes[i].pose, target, rho, step)
-        if edge is None:
-            continue
-
-        nodes.append(Node(target, i, nodes[i].cost + edge.length, edge))
-
-        goal_edge = _try_connect(env, target, goal, rho, step)
-        if goal_edge is None:
-            continue
-        if best is not None:
-            continue
-
-        edges = _extract_path(nodes, len(nodes)- 1 , goal_edge)
-        best = (edges, nodes[-1].cost + goal_edge.length, iteration)
-
-        if stop_on_first_solution:
-            return RRTResult(True, edges, best[1], iteration, nodes)
-
-    if best is not None:
-        return RRTResult(True, best[0], best[1], max_iterations, nodes)
-    return RRTResult(False, [], math.inf, max_iterations, nodes)
-
-
 def _neighbour_radius(n: int, gamma: float, cap: float) -> float:
     """RRT* komsuluk yaricapi; agac buyudukce kuculur."""
     if n <= 1:
         return cap
 
     return min(gamma * (math.log(n) / n) ** (1 / 3), cap)
+
 
 def _neighbours(nodes: list[Node], pose: Pose, radius: float) -> list[int]:
     """Yaricap icindeki dugumlerin indekslerini doner; Oklid ile eler."""
@@ -171,16 +103,11 @@ def _neighbours(nodes: list[Node], pose: Pose, radius: float) -> list[int]:
             neighbour_list.append(i)
     return neighbour_list
 
+
 def _choose_parent(env: Environment, nodes: list[Node], pose: Pose,
                    candidates: list[int], rho: float, step: float,
                    fallback: tuple[int, DubinsPath]) -> tuple[int, DubinsPath]:
-    """Adaylar arasindan poza en ucuza ulastirani secer, (indeks, kenar) doner.
-
-    Yon: kenar adaydan yeni poza kurulur, cunku maliyet
-    nodes[j].cost + d(nodes[j] -> pose). Tersi farkli bir sayidir ve sessizce
-    optimal olmayan agac kurar. Hicbir aday fallback'ten iyi degilse fallback
-    aynen doner.
-    """
+    """Adaylar arasindan poza en ucuza ulastirani secer, (indeks, kenar) doner."""
     best_index, best_edge = fallback
     best_cost = nodes[best_index].cost + best_edge.length
     for j in candidates:
@@ -195,3 +122,72 @@ def _choose_parent(env: Environment, nodes: list[Node], pose: Pose,
     return best_index, best_edge
 
 
+def plan(start: Pose, goal: Pose, env: Environment, rho: float,
+         max_iterations: int = 5000, goal_bias: float = 0.05,
+         step: float | None = None, rng: random.Random | None = None,
+         stop_on_first_solution: bool = False,
+         radius_gamma: float = 60.0, radius_cap: float = 30.0) -> RRTResult:
+    """start'tan goal'a carpismasiz bir Dubins rotasi arar (RRT*).
+
+    Her yinelemede bir poz orneklenir, en yakin dugumden oraya kenar kurulur,
+    komsular arasindan en ucuz ebeveyn secilir, sonra hedefe uzanilmaya
+    calisilir. Hedefe ulasan tum baglantilar biriktirilir; sonunda en ucuzu
+    secilir.
+    """
+    if rho <= 0.0:
+        raise ValueError(f"rho pozitif olmali: {rho}")
+    if max_iterations <= 0:
+        raise ValueError(f"max_iterations pozitif olmali: {max_iterations}")
+    if goal_bias < 0.0 or goal_bias > 1.0:
+        raise ValueError(f"goal_bias 0.0-1.0 araliginda olmali: {goal_bias}")
+    if step is not None and step <= 0.0:
+        raise ValueError(f"step pozitif olmali: {step}")
+    if not env.is_free(start):
+        raise ValueError(f"baslangic pozu engelli veya harita disinda: {start}")
+    if not env.is_free(goal):
+        raise ValueError(f"hedef pozu engelli veya harita disinda: {goal}")
+    if radius_gamma <= 0.0:
+        raise ValueError(f"radius_gamma pozitif olmali: {radius_gamma}")
+    if radius_cap <= 0.0:
+        raise ValueError(f"radius_cap pozitif olmali: {radius_cap}")
+
+    if step is None:
+        step = env.suggested_step()
+    if rng is None:
+        rng = random.Random()
+
+    nodes = [Node(start, None, 0.0, None)]
+    goal_links = []          # (dugum indeksi, hedefe giden kenar)
+
+    for iteration in range(1, max_iterations + 1):
+        target = _sample(env, goal, rng, goal_bias)
+        i = _nearest(nodes, target, rho)
+        edge = _try_connect(env, nodes[i].pose, target, rho, step)
+        if edge is None:
+            continue
+
+        #en iyi komsu aranıyor
+        radius = _neighbour_radius(len(nodes), radius_gamma, radius_cap)
+        cands = _neighbours(nodes, target, radius)
+        i, edge = _choose_parent(env, nodes, target, cands, rho, step, (i, edge))
+
+        nodes.append(Node(target, i, nodes[i].cost + edge.length, edge))
+
+        goal_edge = _try_connect(env, target, goal, rho, step)
+        if goal_edge is None:
+            continue
+
+        goal_links.append((len(nodes) - 1, goal_edge))
+        if stop_on_first_solution:
+            edges = _extract_path(nodes, len(nodes) - 1, goal_edge)
+            cost = nodes[-1].cost + goal_edge.length
+            return RRTResult(True, edges, cost, iteration, nodes)
+
+    if not goal_links:
+        return RRTResult(False, [], math.inf, max_iterations, nodes)
+
+    index, goal_edge = min(goal_links,
+                           key=lambda link: nodes[link[0]].cost + link[1].length)
+    edges = _extract_path(nodes, index, goal_edge)
+    cost = nodes[index].cost + goal_edge.length
+    return RRTResult(True, edges, cost, max_iterations, nodes)
