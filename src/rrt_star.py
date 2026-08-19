@@ -162,12 +162,7 @@ def _neighbour_radius(n: int, gamma: float, cap: float) -> float:
     return min(gamma * (math.log(n) / n) ** (1 / 3), cap)
 
 def _neighbours(nodes: list[Node], pose: Pose, radius: float) -> list[int]:
-    """Yaricap icindeki dugumlerin indekslerini doner; Oklid ile eler.
-
-    Eleme kayipsiz: bir Dubins yolu duz cizgiden kisa olamaz, yani Oklid
-    mesafesi yaricapi asan dugumun Dubins mesafesi de asar. Ucuz hypot ile
-    suzup pahali Dubins'i yalnizca kalanlara uyguluyoruz.
-    """
+    """Yaricap icindeki dugumlerin indekslerini doner; Oklid ile eler."""
     neighbour_list = []
     x, y, _ = pose
     for i in range(len(nodes)):
@@ -175,5 +170,28 @@ def _neighbours(nodes: list[Node], pose: Pose, radius: float) -> list[int]:
         if math.hypot(x_n - x, y_n - y) <= radius:
             neighbour_list.append(i)
     return neighbour_list
+
+def _choose_parent(env: Environment, nodes: list[Node], pose: Pose,
+                   candidates: list[int], rho: float, step: float,
+                   fallback: tuple[int, DubinsPath]) -> tuple[int, DubinsPath]:
+    """Adaylar arasindan poza en ucuza ulastirani secer, (indeks, kenar) doner.
+
+    Yon: kenar adaydan yeni poza kurulur, cunku maliyet
+    nodes[j].cost + d(nodes[j] -> pose). Tersi farkli bir sayidir ve sessizce
+    optimal olmayan agac kurar. Hicbir aday fallback'ten iyi degilse fallback
+    aynen doner.
+    """
+    best_index, best_edge = fallback
+    best_cost = nodes[best_index].cost + best_edge.length
+    for j in candidates:
+        edge = _try_connect(env, nodes[j].pose, pose, rho, step)
+        if edge is None:
+            continue
+        cost = nodes[j].cost + edge.length
+        if cost < best_cost:
+            best_index = j
+            best_edge = edge
+            best_cost = cost
+    return best_index, best_edge
 
 

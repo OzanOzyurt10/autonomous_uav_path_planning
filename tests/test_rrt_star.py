@@ -7,9 +7,9 @@ import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
-from src.rrt_star import (Node, RRTResult, _extract_path, _nearest, _sample,
-                          _neighbour_radius, _neighbours, _try_connect,
-                          plan)
+from src.rrt_star import (Node, RRTResult, _choose_parent, _extract_path,
+                          _nearest, _neighbour_radius, _neighbours, _sample,
+                          _try_connect, plan)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -459,3 +459,65 @@ class TestNeighbours:
 
     def test_empty_when_all_far(self):
         assert _neighbours(self._line(), (500.0, 500.0, 0.0), 5.0) == []
+
+
+# Yon testi icin dogrulanmis pozlar (rho=3.0):
+#   d(A->P) = 11.37   d(B->P) = 22.49      ileri yon: A kazanir
+#   d(P->A) = 20.79   d(P->B) = 15.42      ters yon:  B kazanirdi
+DIR_A = (12.2, 16.6, 1.25 * math.pi)
+DIR_B = (4.9, 6.5, 0.25 * math.pi)
+DIR_P = (3.8, 11.4, 0.75 * math.pi)
+
+
+class TestChooseParent:
+    def _fallback(self, nodes, index, pose):
+        edge = shortest_path(nodes[index].pose, pose, RHO)
+        return (index, edge)
+
+    def test_no_candidates_returns_fallback(self):
+        nodes = [_node(START)]
+        fb = self._fallback(nodes, 0, GOAL)
+        assert _choose_parent(FREE_ENV, nodes, GOAL, [], RHO, STEP, fb) == fb
+
+    def test_picks_cheapest_total_cost(self):
+        """Maliyet dugumun kendi maliyeti + oraya giden kenar."""
+        near = Node((40.0, 30.0, 0.0), None, 100.0, None)   # yakin ama pahali
+        far = Node((10.0, 30.0, 0.0), None, 0.0, None)      # uzak ama ucuz
+        nodes = [near, far]
+        fb = self._fallback(nodes, 0, (60.0, 30.0, 0.0))
+        parent, _ = _choose_parent(FREE_ENV, nodes, (60.0, 30.0, 0.0),
+                                   [0, 1], RHO, STEP, fb)
+        assert parent == 1
+
+    def test_direction_is_candidate_to_new_pose(self):
+        """Yanlis yon kullanilsaydi B secilirdi."""
+        nodes = [_node(DIR_A), _node(DIR_B)]
+        fb = self._fallback(nodes, 1, DIR_P)
+        parent, _ = _choose_parent(FREE_ENV, nodes, DIR_P, [0, 1], RHO, STEP, fb)
+        assert parent == 0
+
+    def test_returned_edge_matches_returned_parent(self):
+        nodes = [_node(DIR_A), _node(DIR_B)]
+        fb = self._fallback(nodes, 1, DIR_P)
+        parent, edge = _choose_parent(FREE_ENV, nodes, DIR_P, [0, 1], RHO, STEP, fb)
+        assert edge.start == nodes[parent].pose
+        assert_pose_close(edge.end_pose(), DIR_P)
+
+    def test_blocked_candidate_is_skipped(self):
+        """Duvarin ardindaki ucuz aday secilemez; fallback kalir."""
+        blocked = Node((5.0, 30.0, 0.0), None, 0.0, None)
+        ok = Node((80.0, 30.0, 0.0), None, 50.0, None)
+        nodes = [blocked, ok]
+        target = (95.0, 30.0, 0.0)
+        fb = self._fallback(nodes, 1, target)
+        parent, _ = _choose_parent(WALL_ENV, nodes, target, [0, 1], RHO, STEP, fb)
+        assert parent == 1
+
+    def test_fallback_wins_when_no_candidate_is_better(self):
+        cheap_fallback = Node(START, None, 0.0, None)
+        expensive = Node((50.0, 30.0, 0.0), None, 500.0, None)
+        nodes = [cheap_fallback, expensive]
+        fb = self._fallback(nodes, 0, GOAL)
+        parent, edge = _choose_parent(FREE_ENV, nodes, GOAL, [1], RHO, STEP, fb)
+        assert parent == 0
+        assert edge is fb[1]
