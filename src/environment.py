@@ -11,6 +11,7 @@ Koordinat sozlesmesi (dubins.py ile ayni):
 """
 
 import math
+import random
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -38,7 +39,11 @@ class Obstacle:
 
     def contains(self, point: Point | Pose, clearance: float = 0.0) -> bool:
         """Nokta bu engelin (sisirilmis) icinde mi.
-        clearance emniyet payi olarak kullanilir
+
+        clearance emniyet payi: yaricaba eklenir. Verilmezse sifir.
+        Sinir uzeri carpisma sayilir (<=, < degil).
+
+        point uc elemanli da olabilir; yalnizca ilk iki bileseni okunur.
         """
         distance = math.hypot(point[0] - self.x, point[1] - self.y)
         return distance <= self.radius + clearance
@@ -92,14 +97,7 @@ class Environment:
         return True
 
     def is_path_free(self, points: Iterable[Point | Pose]) -> bool:
-        """Verilen noktalarin hepsi serbest mi. Bos liste icin True.
-
-        DIKKAT: Bu kontrol YAKLASIKTIR. Iki ornek noktasi arasinda yol bir
-        engelin kenarindan teget gecip hicbir nokta birakmadan cikabilir
-        ("tunelleme"). Iki savunma var: clearance engeli sisirdigi icin teget
-        gecisler tampon bolgeye denk gelir, ve suggested_step() adimi engel
-        boyutuna gore secer. Risk sinirlanir, sifirlanmaz.
-        """
+        """Verilen noktalarin hepsi serbest mi. Bos liste icin True."""
         for point in points:
             if not self.is_free(point):
                 return False
@@ -109,12 +107,7 @@ class Environment:
         """Ornekleme icin onerilen adim boyu, metre.
 
         Engel varsa en kucuk sisirilmis yaricapin yarisi, yoksa haritanin
-        kisa kenarinin onda biri.
-
-        Gerekce: bir engelin icinden gecen yol en az capi kadar mesafe
-        kateder. Adim yaricapin yarisindan kucukse o mesafeye en az bir
-        ornek nokta duser, yani engel atlanmaz.
-        """
+        kisa kenarinin onda biri."""
         x_min, y_min, x_max, y_max = self.bounds
         if not self.obstacles:
             step = min(x_max - x_min, y_max - y_min)
@@ -127,3 +120,31 @@ class Environment:
 
         return (min_obs.radius + self.clearance) / 2
 
+    def random_free_pose(self, rng: random.Random,
+                         max_attempts: int = 1000) -> Pose:
+        """Serbest uzaydan rastgele bir poz uretir.
+
+        Reddetme ornekelemesi (rejection sampling): harita dikdortgeninden
+        rastgele nokta uret, serbest degilse at ve yeniden dene. Engellerin
+        seklinden bagimsiz calisir; tek bildigi is_free.
+
+        rng disaridan alinir ki kosu tekrarlanabilir olsun — ayni tohum ayni
+        diziyi verir. Rastgele algoritmalarda hata ayiklamanin tek yolu bu.
+
+        Raises:
+            RuntimeError: max_attempts denemede serbest poz bulunamazsa.
+                while True yerine sinirli deneme kullanilmasinin sebebi bu:
+                dolu bir haritada program donmak yerine acik hata verir.
+        """
+        x_min, y_min, x_max, y_max = self.bounds
+        for _ in range(max_attempts):
+            x = rng.uniform(x_min, x_max)
+            y = rng.uniform(y_min, y_max)
+            yaw = rng.uniform(0, 2 * math.pi)
+            pose = (x, y, yaw)
+            if self.is_free(pose):
+                return pose
+
+        raise RuntimeError(
+            f"{max_attempts} denemede serbest poz bulunamadi; "
+            f"engeller cok buyuk veya clearance cok yuksek olabilir")

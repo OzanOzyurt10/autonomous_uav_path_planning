@@ -219,3 +219,60 @@ class TestSuggestedStep:
         n = int(100.0 / step) + 1
         points = [(i * step, 30.0) for i in range(n)]
         assert env.is_path_free(points) is False
+
+
+class TestRandomFreePose:
+    def _env(self):
+        return Environment(BOUNDS, (
+            Obstacle(30.0, 30.0, 12.0),
+            Obstacle(70.0, 30.0, 12.0),
+        ), 2.0)
+
+    def test_returns_three_element_pose(self):
+        pose = self._env().random_free_pose(random.Random(1))
+        assert len(pose) == 3
+
+    def test_result_is_always_free(self):
+        env = self._env()
+        rng = random.Random(7)
+        for _ in range(200):
+            assert env.is_free(env.random_free_pose(rng)) is True
+
+    def test_result_is_inside_bounds(self):
+        env = self._env()
+        rng = random.Random(8)
+        x_min, y_min, x_max, y_max = BOUNDS
+        for _ in range(200):
+            x, y, _yaw = env.random_free_pose(rng)
+            assert x_min <= x <= x_max
+            assert y_min <= y <= y_max
+
+    def test_yaw_is_normalized(self):
+        env = self._env()
+        rng = random.Random(9)
+        for _ in range(200):
+            _x, _y, yaw = env.random_free_pose(rng)
+            assert 0.0 <= yaw < 2 * math.pi
+
+    def test_same_seed_gives_same_result(self):
+        env = self._env()
+        first = env.random_free_pose(random.Random(42))
+        second = env.random_free_pose(random.Random(42))
+        assert first == second
+
+    def test_different_seeds_give_different_results(self):
+        env = self._env()
+        assert env.random_free_pose(random.Random(1)) !=             env.random_free_pose(random.Random(2))
+
+    def test_full_map_raises_runtime_error(self):
+        # tum haritayi kaplayan engel: serbest poz bulunamaz
+        env = Environment((0.0, 0.0, 10.0, 10.0),
+                          (Obstacle(5.0, 5.0, 100.0),), 0.0)
+        with pytest.raises(RuntimeError):
+            env.random_free_pose(random.Random(1))
+
+    def test_max_attempts_is_respected(self):
+        env = Environment((0.0, 0.0, 10.0, 10.0),
+                          (Obstacle(5.0, 5.0, 100.0),), 0.0)
+        with pytest.raises(RuntimeError):
+            env.random_free_pose(random.Random(1), max_attempts=5)
