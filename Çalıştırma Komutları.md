@@ -6,6 +6,7 @@ dubins_benchmark çalıştırmak için : venv\Scripts\python.exe -m notebooks.du
 
 environment_demo çalıştırmak için : venv\Scripts\python.exe -m notebooks.environment_demo
 
+rrt_demo çalıştırmak için : ./venv/Scripts/python.exe -m notebooks.rrt_demo
 
 
 

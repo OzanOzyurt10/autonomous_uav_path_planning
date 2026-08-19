@@ -58,12 +58,7 @@ def _try_connect(env: Environment, from_pose: Pose, to_pose: Pose,
 
 
 def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
-    """Hedefe en yakin dugumun indeksini doner (dugumu degil).
-
-    Mesafe agactan hedefe yonunde: Dubins simetrik degil. Oklid kullanilmiyor
-    cunku ters bakan yakin dugum aslinda uzaktir. Esitlikte ilk gelen kazanir.
-    En sicak dongu: dugum basina tek path_length cagrisi.
-    """
+    """Hedefe en yakin dugumun indeksini doner (dugumu degil)."""
     min_index = None
     min_dist = None
     for i in range(len(nodes)):
@@ -76,12 +71,7 @@ def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
 
 def _sample(env: Environment, goal: Pose, rng: random.Random,
             goal_bias: float) -> Pose:
-    """goal_bias olasilikla hedefi, aksi halde rastgele serbest bir poz doner.
-
-    Bias agaci hedefe ceker; olmadan RRT amacsizca yayilir. Tipik deger 0.05.
-    Karsilastirma < ile: rng.random() [0,1) uretir, goal_bias=0.0 iken hedef
-    hic donmemeli.
-    """
+    """goal_bias olasilikla hedefi, aksi halde rastgele serbest bir poz doner."""
     if rng.random() < goal_bias:
         return goal
     return env.random_free_pose(rng)
@@ -113,10 +103,6 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
     temizse agac buyur; ardindan yeni dugumden hedefe uzanilmaya calisilir.
 
     step None ise env.suggested_step(), rng None ise tohumsuz uretilir.
-
-    ValueError: rho/max_iterations/step pozitif degilse, goal_bias 0-1
-    disindaysa, start veya goal engelli ya da harita disindaysa. Son ikisi
-    olmasa planlayici butun butceyi harcar ve hata algoritmada sanilirdi.
 
     stop_on_first_solution=False bu asamada rotayi iyilestirmez; parametre
     ikinci asamadaki rewire icin simdiden imzada duruyor.
