@@ -152,3 +152,16 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
     if best is not None:
         return RRTResult(True, best[0], best[1], max_iterations, nodes)
     return RRTResult(False, [], math.inf, max_iterations, nodes)
+
+
+def _neighbour_radius(n: int, gamma: float, cap: float) -> float:
+    """RRT* komsuluk yaricapi; agac buyudukce kuculur.
+
+    Us 1/3 cunku konfigurasyon uzayi SE(2) uc boyutlu (x, y, yaw). Formul
+    Oklid uzayi icin ispatlanmis, Dubins'e uygulanmasi yaklasiklik.
+    n <= 1 iken log 0 verecegi icin dogrudan cap donuyor.
+    """
+    if n <= 1:
+        return cap
+
+    return min(gamma * (math.log(n) / n) ** (1 / 3), cap)

@@ -8,7 +8,7 @@ import pytest
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
 from src.rrt_star import (Node, RRTResult, _extract_path, _nearest, _sample,
-                          _try_connect, plan)
+                          _neighbour_radius, _try_connect, plan)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -403,3 +403,27 @@ class TestPlanUnsolvable:
     def test_tree_is_returned_for_debugging(self):
         # agac bos donmemeli; nereye kadar yayildigini gorebilmeliyiz
         assert len(self._result().tree) >= 1
+
+
+class TestNeighbourRadius:
+    def test_small_tree_uses_cap(self):
+        assert _neighbour_radius(0, 60.0, 30.0) == 30.0
+        assert _neighbour_radius(1, 60.0, 30.0) == 30.0
+
+    def test_shrinks_as_tree_grows(self):
+        radii = [_neighbour_radius(n, 60.0, 30.0) for n in (50, 200, 1000)]
+        assert radii == sorted(radii, reverse=True)
+
+    def test_never_exceeds_cap(self):
+        for n in range(2, 500):
+            assert _neighbour_radius(n, 60.0, 30.0) <= 30.0
+
+    def test_known_values(self):
+        assert math.isclose(_neighbour_radius(50, 60.0, 30.0), 25.66, abs_tol=0.01)
+        assert math.isclose(_neighbour_radius(200, 60.0, 30.0), 17.89, abs_tol=0.01)
+        assert math.isclose(_neighbour_radius(1000, 60.0, 30.0), 11.43, abs_tol=0.01)
+
+    def test_gamma_scales_radius(self):
+        small = _neighbour_radius(500, 30.0, 1000.0)
+        large = _neighbour_radius(500, 60.0, 1000.0)
+        assert math.isclose(large, 2 * small)
