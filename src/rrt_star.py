@@ -83,3 +83,30 @@ def _try_connect(env: Environment, from_pose: Pose, to_pose: Pose,
     if env.is_path_free(path.sample(step)):
         return path
     return None
+
+
+def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
+    """Hedefe en yakin dugumun indeksini doner (dugumun kendisini degil).
+
+    Mesafe agactan hedefe yonunde olculur: path_length(dugum, target).
+    Yon onemli cunku Dubins mesafesi simetrik degil; (0,0,0)->(0,3,pi/2)
+    14.86 m iken tersi 11.66 m.
+
+    Oklid mesafesi kullanilmiyor. Yakin ama ters yone bakan bir dugume
+    baglanmak koca bir donus gerektirir; Dubins bunu hesaba katar, hypot
+    katmaz.
+
+    Esitlikte ilk gelen kazanir (karsilastirma < ile yapiliyor).
+
+    Bu fonksiyon planlayicinin en sicak dongusu: her yinelemede agacin
+    tamami taraniyor. O yuzden dugum basina yalnizca bir path_length
+    cagrisi var, sonucu dist'te tutuluyor.
+    """
+    min_index = None
+    min_dist = None
+    for i in range(len(nodes)):
+        dist = path_length(nodes[i].pose, target, rho)
+        if min_index is None or dist < min_dist:
+            min_index = i
+            min_dist = dist
+    return min_index

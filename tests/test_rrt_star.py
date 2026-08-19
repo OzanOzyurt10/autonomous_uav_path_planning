@@ -7,7 +7,7 @@ import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
-from src.rrt_star import Node, RRTResult, _try_connect
+from src.rrt_star import Node, RRTResult, _nearest, _try_connect
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -121,3 +121,47 @@ class TestTryConnect:
         path = _try_connect(FREE_ENV, START, START, RHO, STEP)
         assert path is not None
         assert math.isclose(path.length, 0.0, abs_tol=1e-9)
+
+
+def _node(pose):
+    return Node(pose, None, 0.0, None)
+
+
+class TestNearest:
+    def test_single_node_returns_zero(self):
+        assert _nearest([_node(START)], GOAL, RHO) == 0
+
+    def test_picks_minimum_dubins_distance(self):
+        nodes = [_node((0.0, 0.0, 0.0)),
+                 _node((50.0, 0.0, 0.0)),
+                 _node((90.0, 0.0, 0.0))]
+        target = (95.0, 0.0, 0.0)
+        assert _nearest(nodes, target, RHO) == 2
+
+    def test_dubins_not_euclidean(self):
+        """Oklid'e gore yakin ama ters bakan dugum secilmemeli."""
+        target = (10.0, 0.0, 0.0)
+        near_but_backwards = _node((5.0, 0.0, math.pi))   # oklid 5, dubins ~13
+        far_but_aligned = _node((0.0, 0.0, 0.0))          # oklid 10, dubins 10
+        nodes = [near_but_backwards, far_but_aligned]
+        assert _nearest(nodes, target, 2.0) == 1
+
+    def test_direction_is_from_tree_to_target(self):
+        """Mesafe gidis yonunde olculmeli; Dubins simetrik degildir."""
+        # P=(0,0,0) -> Q=(0,3,pi/2) = 14.857 m,  Q -> P = 11.661 m
+        p, q = (0.0, 0.0, 0.0), (0.0, 3.0, math.pi / 2)
+        assert not math.isclose(path_length(p, q, 2.0), path_length(q, p, 2.0))
+
+        # agacta P ve uzak bir dugum var; hedef Q.
+        # dogru yon P->Q olculmeli
+        far = _node((60.0, 60.0, 0.0))
+        nodes = [_node(p), far]
+        assert _nearest(nodes, q, 2.0) == 0
+
+    def test_returns_index_not_node(self):
+        result = _nearest([_node(START), _node(GOAL)], GOAL, RHO)
+        assert isinstance(result, int)
+
+    def test_ties_pick_first(self):
+        nodes = [_node((0.0, 0.0, 0.0)), _node((0.0, 0.0, 0.0))]
+        assert _nearest(nodes, (10.0, 0.0, 0.0), RHO) == 0
