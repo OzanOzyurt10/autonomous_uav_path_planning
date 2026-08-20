@@ -1,8 +1,8 @@
-"""RRT planlayici gorsellestirme demosu.
+"""RRT ve RRT* karsilastirmali gorsellestirme demosu.
 
-Engelli bir haritada rota planlar; agacin tamamini acik gri, bulunan rotayi
-kalin kirmizi cizer. Agacin engel iclerinde dali olmamali - varsa carpisma
-kontrolu bozuk demektir.
+Ayni tohum, ayni butce, ayni harita ile iki kosu yan yana cizilir: solda ilk
+cozumde duran duz RRT, sagda butceyi harcayan RRT*. Agac acik gri, rota kalin
+yesil. Agacin engel iclerinde dali olmamali - varsa carpisma kontrolu bozuk.
 
 Calistirma (proje kokunden, -m sart):
     ./venv/Scripts/python.exe -m notebooks.rrt_demo
@@ -17,19 +17,57 @@ from matplotlib.patches import Circle
 from src.environment import Environment, Obstacle
 from src.rrt_star import plan
 
-BOUNDS = (0.0, 0.0, 100.0, 60.0)
+BOUNDS = (0.0, 0.0, 150.0, 150.0)
 CLEARANCE = 2.0
-RHO = 4.0
+RHO = 6.0
 START = (5.0, 5.0, math.radians(45))
-GOAL = (95.0, 55.0, 0.0)
+GOAL = (105.0, 85.0, 0.0)
 MAX_ITERATIONS = 500
 SEED = 1
 
+# Varsayilan radius_gamma=60 / radius_cap=30 100x60 m harita icin ayarliydi.
+# Bu harita 150x150, alani 3.75 kati; ayni komsu sayisi icin yaricap ~2 kat
+# buyumeli. 120/60 ile rota 178.6 m -> 172.0 m; 180/90 ayni sonucu veriyor,
+# yani doyuma ulasilmis.
+RADIUS_GAMMA = 120.0
+RADIUS_CAP = 60.0
+
 OBSTACLES = (
-    Obstacle(50.0, 30.0, 13.0),   # dogrudan yolu kesen orta engel
-    Obstacle(25.0, 45.0, 8.0),
-    Obstacle(72.0, 15.0, 10.0),
-    Obstacle(80.0, 48.0, 6.0),
+    # -------------------------------------------------
+    # 1. bariyer
+    # Geçiş: sağ-orta
+    # -------------------------------------------------
+    Obstacle(0.0, 22.0, 10.0),
+    Obstacle(42.0, 22.0, 10.0),
+    Obstacle(84.0, 22.0, 10.0),
+    Obstacle(126.0, 22.0, 10.0),
+
+    # -------------------------------------------------
+    # 2. bariyer
+    # Geçiş: sol-orta
+    # -------------------------------------------------
+    Obstacle(0.0, 45.0, 10.0),
+    Obstacle(42.0, 45.0, 10.0),
+    Obstacle(84.0, 45.0, 10.0),
+    Obstacle(126.0, 45.0, 10.0),
+
+    # -------------------------------------------------
+    # 3. bariyer
+    # Geçiş: sağ-orta
+    # -------------------------------------------------
+    Obstacle(0.0, 68.0, 10.0),
+    Obstacle(42.0, 68.0, 10.0),
+    Obstacle(84.0, 68.0, 10.0),
+    Obstacle(126.0, 68.0, 10.0),
+
+    # -------------------------------------------------
+    # 4. bariyer
+    # Geçiş: sol-orta
+    # -------------------------------------------------
+    Obstacle(0.0, 88.0, 10.0),
+    Obstacle(42.0, 88.0, 10.0),
+    Obstacle(84.0, 88.0, 10.0),
+    Obstacle(126.0, 88.0, 10.0),
 )
 
 ARROW_LEN = 3.0
@@ -60,15 +98,8 @@ def draw_environment(ax, env):
             color="black", linewidth=1.0, zorder=1)
 
 
-def main():
-    env = Environment(BOUNDS, OBSTACLES, CLEARANCE)
-    # stop_on_first_solution=False: rota ilk bulundugunda donmek yerine
-    # butce boyunca agaci buyutmeye devam eder. Duz RRT rotayi iyilestirmez,
-    # ama agacin nereye yayildigini gormek icin demoda faydali.
-    result = plan(START, GOAL, env, RHO, max_iterations=MAX_ITERATIONS,
-                  rng=random.Random(SEED), stop_on_first_solution=False)
-
-    fig, ax = plt.subplots(figsize=(12, 8))
+def draw_run(ax, env, result, title):
+    """Bir kosunun agacini ve rotasini verilen eksene cizer."""
     draw_environment(ax, env)
 
     # agac: her dugumun ebeveyninden gelen kenari. Kokun kenari yok.
@@ -83,28 +114,48 @@ def main():
     for edge in result.edges:
         pts = edge.sample(0.2)
         ax.plot([p[0] for p in pts], [p[1] for p in pts],
-                color="crimson", linewidth=2.5, zorder=4)
+                color="darkgreen", linewidth=2.5, zorder=4)
 
     draw_pose(ax, START, "royalblue", "baslangic")
-    draw_pose(ax, GOAL, "seagreen", "hedef")
+    draw_pose(ax, GOAL, "red", "hedef")
 
     cost_text = f"{result.cost:.1f} m" if result.found else "-"
-    ax.set_title(
-        f"RRT - Dubins rota planlama   "
-        f"(bulundu={result.found}, iterasyon={result.iterations}, "
-        f"dugum={len(result.tree)}, uzunluk={cost_text}, rho={RHO} m)")
+    ax.set_title(f"{title}\n"
+                 f"dugum={len(result.tree)}, uzunluk={cost_text}")
     ax.set_xlabel("x (dogu, m)")
     ax.set_ylabel("y (kuzey, m)")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.25)
     ax.legend(loc="upper left")
 
-    plt.tight_layout()
+
+def main():
+    env = Environment(BOUNDS, OBSTACLES, CLEARANCE)
+
+    # Ayni tohum: iki kosu ayni ornekleri goruyor, fark yalnizca algoritmadan.
+    plain = plan(START, GOAL, env, RHO, max_iterations=MAX_ITERATIONS,
+                 rng=random.Random(SEED), stop_on_first_solution=True)
+    star = plan(START, GOAL, env, RHO, max_iterations=MAX_ITERATIONS,
+                rng=random.Random(SEED), radius_gamma=RADIUS_GAMMA,
+                radius_cap=RADIUS_CAP)
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(20, 10))
+    draw_run(ax_left, env, plain, "Duz RRT - ilk cozumde durur")
+    draw_run(ax_right, env, star, f"RRT* - {MAX_ITERATIONS} yineleme")
+
+    gain = 100 * (plain.cost - star.cost) / plain.cost
+    fig.suptitle(f"Dubins rota planlama: RRT ve RRT*   "
+                 f"(rho={RHO} m, tohum={SEED}, kisalma %{gain:.1f})",
+                 fontsize=15, y=0.99)
+
+    # rect ust kenari 0.93: suptitle ile panel basliklari cakismasin
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
     plt.savefig("results/rrt_demo.png", dpi=150)
     plt.close()
     print(f"kaydedildi: results/rrt_demo.png  "
-          f"(bulundu={result.found}, iterasyon={result.iterations}, "
-          f"dugum={len(result.tree)}, uzunluk={cost_text})")
+          f"duz RRT {plain.cost:.1f} m ({len(plain.tree)} dugum) -> "
+          f"RRT* {star.cost:.1f} m ({len(star.tree)} dugum), "
+          f"kisalma %{gain:.1f}")
 
 
 if __name__ == "__main__":
