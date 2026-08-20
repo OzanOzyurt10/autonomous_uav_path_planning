@@ -26,3 +26,14 @@ class DubinsPath3D:
     horizontal: DubinsPath
     helix_turns: int
     gamma: float
+
+def _helix(start2: tuple[float, float, float], direction: str,
+           length: float, rho: float) -> DubinsPath:
+    """Verilen yonde length metre donen bir yol; bitis pozunu degistirmez.
+
+    Tam turlar (2*pi*rho katlari) baslangic pozuna birebir doner, yani yatay
+    uzunluk eklerken hedefi kaydirmaz. Butun donus ilk parcada, digerleri sifir.
+    """
+    word = direction + "S" + direction
+    lengths = (length, 0.0, 0.0)
+    return DubinsPath(start2, word, lengths, rho)
