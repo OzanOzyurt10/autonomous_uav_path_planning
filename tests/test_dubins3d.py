@@ -127,3 +127,69 @@ class TestLengths:
         p = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
         assert math.isclose(p.horizontal_length, 92.831853, abs_tol=1e-5)
         assert math.isclose(p.length, 94.961850, abs_tol=1e-5)
+
+
+class TestInterpolate:
+    def _climb(self):
+        """30 m yatay yol, 2 helis, ~12.16 derece tirmanis."""
+        return _manual((0.0, 0.0, 100.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+
+    def test_start_is_returned_at_zero(self):
+        p = self._climb()
+        assert_pose3_close(p.interpolate(0.0), p.start)
+
+    def test_end_pose_matches_interpolate_at_length(self):
+        p = self._climb()
+        assert_pose3_close(p.interpolate(p.length), p.end_pose())
+
+    def test_end_pose_xy_yaw_come_from_horizontal(self):
+        p = self._climb()
+        hx, hy, hyaw = p.horizontal.end_pose()
+        end = p.end_pose()
+        assert math.isclose(end[0], hx, abs_tol=1e-9)
+        assert math.isclose(end[1], hy, abs_tol=1e-9)
+        assert math.isclose(end[3], hyaw, abs_tol=1e-9)
+
+    def test_end_altitude_follows_gamma(self):
+        p = self._climb()
+        expected = p.start[2] + p.horizontal_length * math.tan(p.gamma)
+        assert math.isclose(p.end_pose()[2], expected, abs_tol=1e-9)
+
+    def test_altitude_is_monotone_while_climbing(self):
+        p = self._climb()
+        zs = [p.interpolate(i / 40 * p.length)[2] for i in range(41)]
+        assert zs == sorted(zs)
+
+    def test_altitude_is_monotone_while_descending(self):
+        p = _manual((0.0, 0.0, 100.0, 0.0), (30.0, 0.0, 0.0), 2, -0.212200)
+        zs = [p.interpolate(i / 40 * p.length)[2] for i in range(41)]
+        assert zs == sorted(zs, reverse=True)
+
+    def test_helix_region_stays_near_start_xy(self):
+        """Helis bolgesinde ucak baslangicin cevresinde donuyor."""
+        p = self._climb()
+        h_end = p.helix_turns * TWO_PI_RHO           # helis biterken yatay mesafe
+        s = (h_end / 2) / math.cos(p.gamma)          # helisin ortasi
+        x, y, _, _ = p.interpolate(s)
+        assert math.hypot(x - p.start[0], y - p.start[1]) <= 2 * RHO + 1e-9
+
+    def test_after_helix_follows_horizontal(self):
+        p = self._climb()
+        h_after = p.helix_turns * TWO_PI_RHO + 10.0
+        x, y, _, yaw = p.interpolate(h_after / math.cos(p.gamma))
+        hx, hy, hyaw = p.horizontal.interpolate(10.0)
+        assert math.isclose(x, hx, abs_tol=1e-9)
+        assert math.isclose(y, hy, abs_tol=1e-9)
+        assert math.isclose(yaw, hyaw, abs_tol=1e-9)
+
+    def test_clamps_out_of_range(self):
+        p = self._climb()
+        assert_pose3_close(p.interpolate(-5.0), p.start)
+        assert_pose3_close(p.interpolate(p.length + 5.0), p.end_pose())
+
+    def test_no_helix_path_ignores_helix_branch(self):
+        p = _manual((0.0, 0.0, 50.0, 0.0), (100.0, 0.0, 0.0), 0, 0.099669)
+        x, y, z, yaw = p.interpolate(p.length / 2)
+        hx, hy, hyaw = p.horizontal.interpolate(50.0)
+        assert math.isclose(x, hx, abs_tol=1e-9)
+        assert math.isclose(y, hy, abs_tol=1e-9)

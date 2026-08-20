@@ -38,6 +38,29 @@ class DubinsPath3D:
         """3B uzunluk; yatay mesafenin gamma acisiyla hipotenusu."""
         return self.horizontal_length / math.cos(self.gamma)
 
+    def interpolate(self, s: float) -> Pose3:
+        """Yolun basindan s metre ilerideki 3B pozu doner.
+
+        s aralik disindaysa kirpilir. Yatayda alinan mesafe s*cos(gamma);
+        irtifa buna bagli olarak s*sin(gamma) kadar degisir.
+        """
+        s = max(0.0, min(s, self.length))
+        horizontal = s * math.cos(self.gamma)
+        z = self.start[2] + s * math.sin(self.gamma)
+        helix_length = self.helix_turns * 2 * math.pi * self.horizontal.rho
+
+        if horizontal < helix_length:
+            helix = _helix(self.horizontal.start, self.horizontal.word[0],
+                           helix_length, self.horizontal.rho)
+            x, y, yaw = helix.interpolate(horizontal)
+        else:
+            x, y, yaw = self.horizontal.interpolate(horizontal - helix_length)
+        return (x, y, z, yaw)
+
+    def end_pose(self) -> Pose3:
+        """Yolun bitis pozu."""
+        return self.interpolate(self.length)
+
 
 def _helix(start2: tuple[float, float, float], direction: str,
            length: float, rho: float) -> DubinsPath:
