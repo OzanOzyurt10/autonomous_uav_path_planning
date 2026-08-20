@@ -122,3 +122,61 @@ class TestEnvironmentIsFree:
 
     def test_accepts_pose(self):
         assert self._env().is_free((10.0, 10.0, 10.0, 0.7)) is True
+
+
+class TestIsPathFree:
+    def _env(self):
+        return Environment3D(BOUNDS, (TOWER,), CLEARANCE)
+
+    def test_all_free(self):
+        pts = [(10.0, 10.0, 10.0), (20.0, 20.0, 15.0), (30.0, 30.0, 20.0)]
+        assert self._env().is_path_free(pts) is True
+
+    def test_one_blocked_point_fails_the_path(self):
+        pts = [(10.0, 10.0, 10.0), (50.0, 50.0, 15.0), (30.0, 30.0, 20.0)]
+        assert self._env().is_path_free(pts) is False
+
+    def test_path_over_the_tower_is_free(self):
+        """Kulenin uzerinden gecen yol serbest; 3B'nin kazandirdigi sey."""
+        pts = [(30.0, 50.0, 40.0), (50.0, 50.0, 40.0), (70.0, 50.0, 40.0)]
+        assert self._env().is_path_free(pts) is True
+
+    def test_empty_path_is_free(self):
+        assert self._env().is_path_free([]) is True
+
+    def test_accepts_poses(self):
+        pts = [(10.0, 10.0, 10.0, 0.0), (20.0, 20.0, 15.0, 1.0)]
+        assert self._env().is_path_free(pts) is True
+
+
+class TestSuggestedStep:
+    def test_no_obstacles_uses_shortest_side(self):
+        """Kenarlar 100, 100, 80 -> en kisasi 80, onda biri 8."""
+        env = Environment3D(BOUNDS, (), CLEARANCE)
+        assert math.isclose(env.suggested_step(), 8.0)
+
+    def test_tall_thin_cylinder_uses_radius(self):
+        """Yaricap 10, yukseklik 60: min(10+2, 30+2) = 12 -> adim 6."""
+        tall = Cylinder(50.0, 50.0, 10.0, 0.0, 60.0)
+        env = Environment3D(BOUNDS, (tall,), CLEARANCE)
+        assert math.isclose(env.suggested_step(), 6.0)
+
+    def test_low_wide_cylinder_uses_height(self):
+        """Yaricap 20, yukseklik 4: min(20+2, 2+2) = 4 -> adim 2.
+
+        2B kural sadece yaricapa baksaydi adim 11 cikardi ve bu ince
+        engel dikeyde atlanabilirdi.
+        """
+        low = Cylinder(50.0, 50.0, 20.0, 10.0, 14.0)
+        env = Environment3D(BOUNDS, (low,), CLEARANCE)
+        assert math.isclose(env.suggested_step(), 2.0)
+
+    def test_smallest_obstacle_wins(self):
+        big = Cylinder(20.0, 20.0, 30.0, 0.0, 70.0)
+        small = Cylinder(70.0, 70.0, 5.0, 0.0, 70.0)
+        env = Environment3D(BOUNDS, (big, small), CLEARANCE)
+        assert math.isclose(env.suggested_step(), 3.5)   # (5+2)/2
+
+    def test_step_is_positive(self):
+        env = Environment3D(BOUNDS, (TOWER,), CLEARANCE)
+        assert env.suggested_step() > 0.0

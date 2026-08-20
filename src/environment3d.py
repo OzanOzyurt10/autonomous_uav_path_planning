@@ -61,3 +61,27 @@ class Environment3D:
             return False
         return not any(obstacle.contains(point, self.clearance)
                        for obstacle in self.obstacles)
+
+    def is_path_free(self, points: Iterable[Point3 | Pose3]) -> bool:
+        """Nokta listesinin tamami serbest mi. Bos liste serbest sayilir."""
+        return all(self.is_free(point) for point in points)
+
+    def suggested_step(self) -> float:
+        """Carpisma kontrolu icin onerilen ornekleme araligi, metre.
+
+        Her silindirin sisirilmis en kucuk yari-boyutu min(yaricap,
+        yukseklik/2) + clearance; bunlarin en kucugunun yarisi adim olur.
+        Yukseklik de sayiliyor cunku alcak ve genis bir engel yalnizca
+        yaricapa bakan bir adimla dikeyde atlanabilir.
+
+        Sezgisel bir kural; ayriklastirma hatasini tamamen kapatmiyor,
+        emniyet payi onu yutuyor.
+        """
+        x_min, y_min, z_min, x_max, y_max, z_max = self.bounds
+        if not self.obstacles:
+            return min(x_max - x_min, y_max - y_min, z_max - z_min) / 10
+
+        half_sizes = [min(obstacle.radius,
+                          (obstacle.z_max - obstacle.z_min) / 2) + self.clearance
+                      for obstacle in self.obstacles]
+        return min(half_sizes) / 2
