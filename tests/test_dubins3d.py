@@ -193,3 +193,39 @@ class TestInterpolate:
         hx, hy, hyaw = p.horizontal.interpolate(50.0)
         assert math.isclose(x, hx, abs_tol=1e-9)
         assert math.isclose(y, hy, abs_tol=1e-9)
+
+
+class TestSample3D:
+    def _climb(self):
+        return _manual((0.0, 0.0, 100.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+
+    def test_first_and_last(self):
+        p = self._climb()
+        pts = p.sample(1.0)
+        assert_pose3_close(pts[0], p.start)
+        assert_pose3_close(pts[-1], p.end_pose())
+
+    def test_spacing_never_exceeds_step(self):
+        p = self._climb()
+        pts = p.sample(2.0)
+        for a, b in zip(pts, pts[1:]):
+            d = math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2
+                          + (b[2] - a[2]) ** 2)
+            assert d <= 2.0 + 1e-9
+
+    def test_all_points_are_four_element(self):
+        for pose in self._climb().sample(5.0):
+            assert len(pose) == 4
+
+    def test_zero_length_gives_single_point(self):
+        p = _manual((1.0, 2.0, 3.0, 0.0), (1.0, 2.0, 0.0), 0, 0.0)
+        assert p.sample(1.0) == [p.start]
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_bad_step_raises(self, bad):
+        with pytest.raises(ValueError):
+            self._climb().sample(bad)
+
+    def test_smaller_step_gives_more_points(self):
+        p = self._climb()
+        assert len(p.sample(1.0)) > len(p.sample(5.0))

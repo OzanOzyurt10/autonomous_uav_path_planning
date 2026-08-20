@@ -61,6 +61,22 @@ class DubinsPath3D:
         """Yolun bitis pozu."""
         return self.interpolate(self.length)
 
+    def sample(self, step: float) -> list[Pose3]:
+        """Yolu step araliklarla orneklenmis 3B poz listesine cevirir.
+
+        Ilk eleman daima start, son eleman daima bitis pozu; ardisik noktalar
+        arasindaki 3B mesafe step'i asmaz.
+        """
+        if step <= 0:
+            raise ValueError(f"step pozitif olmali, verilen: {step}")
+
+        total = self.length
+        if total == 0.0:
+            return [self.start]
+
+        n = math.ceil(total / step)
+        return [self.interpolate(i / n * total) for i in range(n + 1)]
+
 
 def _helix(start2: tuple[float, float, float], direction: str,
            length: float, rho: float) -> DubinsPath:
