@@ -6,7 +6,7 @@ import random
 import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
-from src.dubins3d import DubinsPath3D, _helix
+from src.dubins3d import DubinsPath3D, _helix, airplane_path
 
 RHO = 5.0
 GAMMA_MAX = math.radians(15.0)
@@ -229,3 +229,101 @@ class TestSample3D:
     def test_smaller_step_gives_more_points(self):
         p = self._climb()
         assert len(p.sample(1.0)) > len(p.sample(5.0))
+
+
+class TestAirplanePathValidation:
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_bad_rho_raises(self, bad):
+        with pytest.raises(ValueError):
+            airplane_path((0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 5.0, 0.0),
+                          bad, GAMMA_MAX)
+
+    @pytest.mark.parametrize("bad", [0.0, -0.1, math.pi / 2, 2.0])
+    def test_bad_gamma_max_raises(self, bad):
+        with pytest.raises(ValueError):
+            airplane_path((0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 5.0, 0.0),
+                          RHO, bad)
+
+
+class TestAirplanePathCases:
+    def test_reachable_altitude_needs_no_helix(self):
+        p = airplane_path((0.0, 0.0, 0.0, 0.0), (100.0, 0.0, 10.0, 0.0),
+                          RHO, GAMMA_MAX)
+        assert p.helix_turns == 0
+        assert math.isclose(p.horizontal_length, 100.0, abs_tol=1e-6)
+        assert math.isclose(p.gamma, 0.099669, abs_tol=1e-5)
+        assert math.isclose(p.length, 100.498756, abs_tol=1e-5)
+
+    def test_unreachable_altitude_adds_helix(self):
+        p = airplane_path((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 20.0, 0.0),
+                          RHO, GAMMA_MAX)
+        assert p.helix_turns == 2
+        assert math.isclose(p.horizontal_length, 92.831853, abs_tol=1e-5)
+        assert math.isclose(p.gamma, 0.212200, abs_tol=1e-5)
+        assert math.isclose(p.length, 94.961850, abs_tol=1e-5)
+
+    def test_descent_mirrors_climb(self):
+        p = airplane_path((0.0, 0.0, 20.0, 0.0), (30.0, 0.0, 0.0, 0.0),
+                          RHO, GAMMA_MAX)
+        assert p.helix_turns == 2
+        assert math.isclose(p.gamma, -0.212200, abs_tol=1e-5)
+
+    def test_level_flight_reduces_to_two_d(self):
+        p = airplane_path((0.0, 0.0, 50.0, 0.0), (40.0, 0.0, 50.0, 0.0),
+                          RHO, GAMMA_MAX)
+        assert p.helix_turns == 0
+        assert p.gamma == 0.0
+        assert math.isclose(p.length, path_length((0.0, 0.0, 0.0),
+                                                  (40.0, 0.0, 0.0), RHO))
+        assert all(math.isclose(q[2], 50.0) for q in p.sample(1.0))
+
+    def test_horizontal_is_the_two_d_shortest_path(self):
+        start = (2.0, 3.0, 10.0, 0.4)
+        goal = (40.0, 25.0, 30.0, 1.2)
+        p = airplane_path(start, goal, RHO, GAMMA_MAX)
+        expected = shortest_path((2.0, 3.0, 0.4), (40.0, 25.0, 1.2), RHO)
+        assert p.horizontal.word == expected.word
+        assert math.isclose(p.horizontal.length, expected.length)
+
+
+class TestAirplanePathGeneral:
+    def _pairs(self, seed=5, n=40):
+        rng = random.Random(seed)
+        for _ in range(n):
+            yield ((rng.uniform(-50, 50), rng.uniform(-50, 50),
+                    rng.uniform(0, 100), rng.uniform(0, 2 * math.pi)),
+                   (rng.uniform(-50, 50), rng.uniform(-50, 50),
+                    rng.uniform(0, 100), rng.uniform(0, 2 * math.pi)))
+
+    @pytest.mark.parametrize("rho", [2.0, 5.0, 12.0])
+    @pytest.mark.parametrize("gamma_deg", [5.0, 15.0, 30.0])
+    def test_end_pose_reaches_goal(self, rho, gamma_deg):
+        """En guclu test: yolun sonu hedefe variyor mu, dort bilesende."""
+        gamma_max = math.radians(gamma_deg)
+        for start, goal in self._pairs():
+            p = airplane_path(start, goal, rho, gamma_max)
+            assert_pose3_close(p.end_pose(), goal)
+
+    @pytest.mark.parametrize("gamma_deg", [5.0, 15.0, 30.0])
+    def test_gamma_never_exceeds_limit(self, gamma_deg):
+        gamma_max = math.radians(gamma_deg)
+        for start, goal in self._pairs():
+            p = airplane_path(start, goal, RHO, gamma_max)
+            assert abs(p.gamma) <= gamma_max + 1e-12
+
+    def test_helix_overshoot_is_less_than_one_turn(self):
+        """Nicemleme en fazla bir tur fazla atmali."""
+        for start, goal in self._pairs():
+            p = airplane_path(start, goal, RHO, GAMMA_MAX)
+            if p.helix_turns == 0:
+                continue
+            dz = goal[2] - start[2]
+            required = abs(dz) / math.tan(GAMMA_MAX)
+            assert p.horizontal_length - required < TWO_PI_RHO + 1e-9
+            assert p.horizontal_length >= required - 1e-9
+
+    def test_altitude_is_monotone(self):
+        for start, goal in self._pairs(seed=11, n=15):
+            p = airplane_path(start, goal, RHO, GAMMA_MAX)
+            zs = [q[2] for q in p.sample(2.0)]
+            assert zs == sorted(zs) or zs == sorted(zs, reverse=True)

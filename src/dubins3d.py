@@ -88,3 +88,33 @@ def _helix(start2: tuple[float, float, float], direction: str,
     word = direction + "S" + direction
     lengths = (length, 0.0, 0.0)
     return DubinsPath(start2, word, lengths, rho)
+
+def airplane_path(start: Pose3, goal: Pose3, rho: float,
+                  gamma_max: float) -> DubinsPath3D:
+    """start'tan goal'a tirmanma acisi sinirina uyan bir 3B yol kurar.
+
+    Yatay yol irtifayi kazanmaya yetmiyorsa baslangicta tam turlar eklenir.
+    O durumda yol optimal degildir: ideal uzunlugun uzerine en fazla bir tur
+    (2*pi*rho) binebilir. Tam tur yerine kismi uzatma literaturdeki "orta
+    irtifa" cozumu, kapsam disi.
+    """
+    if rho <= 0:
+        raise ValueError(f"rho pozitif olmali: {rho}")
+    if gamma_max <= 0 or gamma_max >= math.pi / 2:
+        raise ValueError(f"gamma_max (0, pi/2) araliginda olmali: {gamma_max}")
+
+    pose_s = (start[0], start[1], start[3])
+    pose_g = (goal[0], goal[1], goal[3])
+    horizontal = shortest_path(pose_s, pose_g, rho)
+
+    alt_diff = goal[2] - start[2]
+    required = abs(alt_diff) / math.tan(gamma_max)
+
+    turn = 2 * math.pi * rho
+    helix_turns = 0
+    if horizontal.length < required:
+        helix_turns = math.ceil((required - horizontal.length) / turn)
+
+    total_horizontal = horizontal.length + helix_turns * turn
+    gamma = math.atan2(alt_diff, total_horizontal)
+    return DubinsPath3D(start, horizontal, helix_turns, gamma)
