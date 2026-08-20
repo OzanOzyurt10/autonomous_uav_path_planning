@@ -11,7 +11,8 @@ from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
 from src.rrt_star import (Node, RRTResult, _choose_parent, _extract_path,
                           _nearest, _neighbour_radius, _neighbours,
-                          _propagate_cost, _sample, _try_connect, plan)
+                          _propagate_cost, _rewire, _sample, _try_connect,
+                          plan)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -668,3 +669,63 @@ class TestPropagateCost:
         before = [n.cost for n in nodes]
         _propagate_cost(nodes, 3)
         assert [n.cost for n in nodes] == before
+
+
+class TestRewire:
+    def _two_nodes(self, neighbour_cost):
+        """DIR_P yeni dugum (maliyet 0), DIR_A komsu (maliyeti parametreyle).
+
+        d(P->A) = 20.79 dogru yon, d(A->P) = 11.37 ters yon.
+        """
+        neighbour = Node(DIR_A, None, neighbour_cost, None)
+        new = Node(DIR_P, None, 0.0, None)
+        return [neighbour, new]
+
+    def test_rewires_when_cheaper(self):
+        nodes = self._two_nodes(25.0)     # 0 + 20.79 < 25.0
+        _rewire(FREE_ENV, nodes, 1, [0], RHO, STEP)
+        assert nodes[0].parent == 1
+        assert math.isclose(nodes[0].cost, 20.7948, abs_tol=1e-3)
+        assert nodes[0].path_from_parent is not None
+
+    def test_leaves_alone_when_not_cheaper(self):
+        nodes = self._two_nodes(15.0)     # 0 + 20.79 > 15.0
+        _rewire(FREE_ENV, nodes, 1, [0], RHO, STEP)
+        assert nodes[0].parent is None
+        assert nodes[0].cost == 15.0
+
+    def test_direction_is_new_node_to_neighbour(self):
+        """Ters yon (11.37) kullanilsaydi 15.0 maliyetli komsu yeniden baglanirdi."""
+        nodes = self._two_nodes(15.0)
+        _rewire(FREE_ENV, nodes, 1, [0], RHO, STEP)
+        assert nodes[0].parent is None, "ters yon kullanilmis"
+
+    def test_new_edge_starts_at_new_node(self):
+        nodes = self._two_nodes(25.0)
+        _rewire(FREE_ENV, nodes, 1, [0], RHO, STEP)
+        assert nodes[0].path_from_parent.start == DIR_P
+        assert_pose_close(nodes[0].path_from_parent.end_pose(), DIR_A)
+
+    def test_skips_the_new_node_itself(self):
+        nodes = self._two_nodes(25.0)
+        _rewire(FREE_ENV, nodes, 1, [0, 1], RHO, STEP)
+        assert nodes[1].parent is None
+        assert nodes[1].cost == 0.0
+
+    def test_blocked_edge_prevents_rewire(self):
+        left = Node((5.0, 30.0, 0.0), None, 500.0, None)
+        right = Node((95.0, 30.0, 0.0), None, 0.0, None)
+        nodes = [left, right]
+        _rewire(WALL_ENV, nodes, 1, [0], RHO, STEP)
+        assert nodes[0].parent is None      # duvar araya giriyor
+
+    def test_descendant_costs_follow(self):
+        """Yeniden baglanan dugumun cocuklari da guncellenmeli."""
+        neighbour = Node(DIR_A, None, 25.0, None)
+        child_edge = shortest_path(DIR_A, (30.0, 30.0, 0.0), RHO)
+        child = Node((30.0, 30.0, 0.0), 0, 25.0 + child_edge.length, child_edge)
+        new = Node(DIR_P, None, 0.0, None)
+        nodes = [neighbour, child, new]
+        _rewire(FREE_ENV, nodes, 2, [0], RHO, STEP)
+        assert math.isclose(nodes[1].cost, nodes[0].cost + child_edge.length,
+                            abs_tol=1e-9)

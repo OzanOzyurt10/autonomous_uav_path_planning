@@ -135,9 +135,30 @@ def _propagate_cost(nodes: list[Node], index: int) -> None:
         for c in range(len(nodes)):
             if nodes[c].parent != i:
                 continue
-            nodes[c] = dataclasses.replace(
-                nodes[c], cost=nodes[i].cost + nodes[c].path_from_parent.length)
+            nodes[c] = dataclasses.replace(nodes[c], cost=nodes[i].cost + nodes[c].path_from_parent.length)
             queue.append(c)
+
+def _rewire(env: Environment, nodes: list[Node], new_index: int,
+            candidates: list[int], rho: float, step: float) -> None:
+    """Yeni dugum uzerinden gecmek ucuzlatiyorsa komsulari ona baglar.
+
+    Yon _choose_parent'in tersi: kenar yeni dugumden adaya kurulur, cunku
+    maliyet yeni.cost + d(yeni -> aday). Ayri bir dongu kontrolu gerekmez;
+    aday yeni dugumun atasiysa iyilestirme kosulu zaten tutmaz.
+    """
+    for j in candidates:
+        if j == new_index:
+            continue
+        new_edge = _try_connect(env, nodes[new_index].pose, nodes[j].pose,
+                                rho, step)
+        if new_edge is None:
+            continue
+        new_cost = nodes[new_index].cost + new_edge.length
+        if new_cost >= nodes[j].cost:
+            continue
+        nodes[j] = dataclasses.replace(nodes[j], parent=new_index,
+                                       cost=new_cost, path_from_parent=new_edge)
+        _propagate_cost(nodes, j)
 
 
 def plan(start: Pose, goal: Pose, env: Environment, rho: float,
