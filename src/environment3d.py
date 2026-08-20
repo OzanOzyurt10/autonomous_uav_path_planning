@@ -88,8 +88,7 @@ class Environment3D:
                          max_attempts: int = 1000) -> Pose3:
         """Reddetme ornekleme ile serbest bir poz uretir.
 
-        Bulunamamasi gecersiz girdi degil, cok dolu bir harita demek;
-        o yuzden ValueError degil RuntimeError.
+        Bulunamamasi gecersiz girdi degil, cok dolu bir harita demek.
         """
         x_min, y_min, z_min, x_max, y_max, z_max = self.bounds
         for _ in range(max_attempts):
