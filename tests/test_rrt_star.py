@@ -1,5 +1,6 @@
 """src/rrt_star.py icin testler."""
 
+import dataclasses
 import functools
 import math
 import random
@@ -9,8 +10,8 @@ import pytest
 from src.dubins import DubinsPath, path_length, shortest_path
 from src.environment import Environment, Obstacle
 from src.rrt_star import (Node, RRTResult, _choose_parent, _extract_path,
-                          _nearest, _neighbour_radius, _neighbours, _sample,
-                          _try_connect, plan)
+                          _nearest, _neighbour_radius, _neighbours,
+                          _propagate_cost, _sample, _try_connect, plan)
 
 BOUNDS = (0.0, 0.0, 100.0, 60.0)
 RHO = 3.0
@@ -605,3 +606,65 @@ class TestPlanChooseParent:
         result = self._star(iters=800)
         cheap = self._star(iters=100)
         assert result.cost <= cheap.cost + 1e-9
+
+
+class TestPropagateCost:
+    def _chain(self):
+        """Zincir: 0 -> 1 -> 2 -> 3, her kenar 10 m varsayimiyla kurulmus."""
+        a = (0.0, 0.0, 0.0)
+        b = (10.0, 0.0, 0.0)
+        c = (20.0, 0.0, 0.0)
+        d = (30.0, 0.0, 0.0)
+        ab = shortest_path(a, b, RHO)
+        bc = shortest_path(b, c, RHO)
+        cd = shortest_path(c, d, RHO)
+        return [
+            Node(a, None, 0.0, None),
+            Node(b, 0, ab.length, ab),
+            Node(c, 1, ab.length + bc.length, bc),
+            Node(d, 2, ab.length + bc.length + cd.length, cd),
+        ]
+
+    def test_no_change_when_costs_already_correct(self):
+        nodes = self._chain()
+        before = [n.cost for n in nodes]
+        _propagate_cost(nodes, 0)
+        assert [n.cost for n in nodes] == before
+
+    def test_updates_whole_subtree(self):
+        nodes = self._chain()
+        nodes[1] = dataclasses.replace(nodes[1], cost=100.0)
+        _propagate_cost(nodes, 1)
+        assert math.isclose(nodes[2].cost,
+                            100.0 + nodes[2].path_from_parent.length)
+        assert math.isclose(nodes[3].cost,
+                            nodes[2].cost + nodes[3].path_from_parent.length)
+
+    def test_does_not_touch_ancestors(self):
+        nodes = self._chain()
+        nodes[2] = dataclasses.replace(nodes[2], cost=100.0)
+        _propagate_cost(nodes, 2)
+        assert nodes[0].cost == 0.0
+        assert math.isclose(nodes[1].cost, nodes[1].path_from_parent.length)
+
+    def test_does_not_touch_siblings(self):
+        nodes = self._chain()
+        sibling = shortest_path(nodes[0].pose, (0.0, 20.0, 0.0), RHO)
+        nodes.append(Node((0.0, 20.0, 0.0), 0, sibling.length, sibling))
+        nodes[1] = dataclasses.replace(nodes[1], cost=100.0)
+        _propagate_cost(nodes, 1)
+        assert math.isclose(nodes[4].cost, sibling.length)
+
+    def test_geometry_is_not_recomputed(self):
+        """Kenarlar aynen kalmali; sadece maliyet degisir."""
+        nodes = self._chain()
+        edges = [n.path_from_parent for n in nodes]
+        nodes[1] = dataclasses.replace(nodes[1], cost=100.0)
+        _propagate_cost(nodes, 1)
+        assert [n.path_from_parent for n in nodes] == edges
+
+    def test_leaf_index_is_noop(self):
+        nodes = self._chain()
+        before = [n.cost for n in nodes]
+        _propagate_cost(nodes, 3)
+        assert [n.cost for n in nodes] == before

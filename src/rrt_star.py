@@ -5,6 +5,8 @@ RRT*'in rewire adimi ikinci asamada buraya eklenecek.
 
 Poz duzeni dubins.py ile ayni: (x, y, yaw), ENU, yaw radyan.
 """
+import collections
+import dataclasses
 import math
 import random
 from dataclasses import dataclass
@@ -121,6 +123,22 @@ def _choose_parent(env: Environment, nodes: list[Node], pose: Pose,
             best_cost = cost
     return best_index, best_edge
 
+def _propagate_cost(nodes: list[Node], index: int) -> None:
+    """index'in altindaki alt agacin maliyetlerini gunceller; listeyi yerinde degistirir.
+
+    Node frozen oldugu icin dugumun yerine dataclasses.replace ile yenisi konur.
+    Kenarlarin geometrisi degismez, yalnizca koke kadarki toplam maliyet.
+    """
+    queue = collections.deque([index])
+    while queue:
+        i = queue.popleft()
+        for c in range(len(nodes)):
+            if nodes[c].parent != i:
+                continue
+            nodes[c] = dataclasses.replace(
+                nodes[c], cost=nodes[i].cost + nodes[c].path_from_parent.length)
+            queue.append(c)
+
 
 def plan(start: Pose, goal: Pose, env: Environment, rho: float,
          max_iterations: int = 5000, goal_bias: float = 0.05,
@@ -166,7 +184,7 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
         if edge is None:
             continue
 
-        #en iyi komsu aranıyor
+        # en iyi komsu araniyor
         radius = _neighbour_radius(len(nodes), radius_gamma, radius_cap)
         cands = _neighbours(nodes, target, radius)
         i, edge = _choose_parent(env, nodes, target, cands, rho, step, (i, edge))
@@ -191,3 +209,5 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
     edges = _extract_path(nodes, index, goal_edge)
     cost = nodes[index].cost + goal_edge.length
     return RRTResult(True, edges, cost, max_iterations, nodes)
+
+
