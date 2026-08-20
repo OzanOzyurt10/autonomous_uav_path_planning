@@ -121,8 +121,5 @@ def airplane_path(start: Pose3, goal: Pose3, rho: float,
 
 def airplane_length(start: Pose3, goal: Pose3, rho: float,
                     gamma_max: float) -> float:
-    """Yolun 3B uzunlugu (yatay degil); planlayicinin mesafe olcutu.
-
-    2B'deki path_length'in karsiligi. Dogrulama airplane_path icinde yapiliyor.
-    """
+    """Yolun 3B uzunlugu (yatay degil); planlayicinin mesafe olcutu."""
     return airplane_path(start, goal, rho, gamma_max).length
