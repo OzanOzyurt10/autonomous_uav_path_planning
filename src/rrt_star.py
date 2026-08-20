@@ -211,6 +211,7 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
         i, edge = _choose_parent(env, nodes, target, cands, rho, step, (i, edge))
 
         nodes.append(Node(target, i, nodes[i].cost + edge.length, edge))
+        _rewire(env, nodes, len(nodes) - 1, cands, rho, step)
 
         goal_edge = _try_connect(env, target, goal, rho, step)
         if goal_edge is None:

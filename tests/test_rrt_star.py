@@ -383,13 +383,18 @@ class TestPlanWithObstacle:
         assert math.isclose(first.cost, second.cost)
         assert len(first.edges) == len(second.edges)
 
-    def test_tree_parents_are_valid_indices(self):
+    def test_tree_parents_form_a_valid_tree(self):
         tree = self._result().tree
-        for i, node in enumerate(tree):
-            if node.parent is None:
-                assert i == 0
-            else:
-                assert 0 <= node.parent < i
+        assert tree[0].parent is None
+        for i in range(len(tree)):
+            assert tree[i].parent is None or 0 <= tree[i].parent < len(tree)
+            steps = 0
+            j = i
+            while tree[j].parent is not None:
+                j = tree[j].parent
+                steps += 1
+                assert steps <= len(tree), "dongu var"
+            assert j == 0
 
 
 @functools.lru_cache(maxsize=None)
@@ -729,3 +734,70 @@ class TestRewire:
         _rewire(FREE_ENV, nodes, 2, [0], RHO, STEP)
         assert math.isclose(nodes[1].cost, nodes[0].cost + child_edge.length,
                             abs_tol=1e-9)
+
+
+class TestPlanRewire:
+    def _star(self, seed=1, iters=400):
+        return _star_result(seed, iters)
+
+    @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+    def test_costs_stay_consistent_after_rewiring(self, seed):
+        tree = self._star(seed=seed).tree
+        for node in tree:
+            if node.parent is None:
+                continue
+            expected = tree[node.parent].cost + node.path_from_parent.length
+            assert math.isclose(node.cost, expected, abs_tol=1e-9)
+
+    @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+    def test_no_cycles(self, seed):
+        tree = self._star(seed=seed).tree
+        for i in range(len(tree)):
+            steps = 0
+            j = i
+            while tree[j].parent is not None:
+                j = tree[j].parent
+                steps += 1
+                assert steps <= len(tree)
+            assert j == 0
+
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_more_budget_never_costs_more(self, seed):
+        short = self._star(seed=seed, iters=200)
+        long = self._star(seed=seed, iters=600)
+        assert long.cost <= short.cost + 1e-9
+
+    def test_route_still_collision_free_at_fine_step(self):
+        for edge in self._star().edges:
+            assert WALL_ENV.is_path_free(edge.sample(0.05)) is True
+
+    def test_route_is_continuous(self):
+        edges = self._star().edges
+        for first, second in zip(edges, edges[1:]):
+            assert_pose_close(first.end_pose(), second.start)
+
+    def test_cost_equals_sum_of_edges(self):
+        result = self._star()
+        assert math.isclose(result.cost, sum(e.length for e in result.edges))
+
+    def test_route_starts_at_start_and_ends_at_goal(self):
+        edges = self._star().edges
+        assert_pose_close(edges[0].start, START)
+        assert_pose_close(edges[-1].end_pose(), GOAL)
+
+    def test_curvature_never_exceeds_limit(self):
+        for edge in self._star().edges:
+            points = edge.sample(0.05)
+            for a, b in zip(points, points[1:]):
+                ds = math.hypot(b[0] - a[0], b[1] - a[1])
+                if ds < 1e-12:
+                    continue
+                dyaw = (b[2] - a[2]) % (2 * math.pi)
+                dyaw = min(dyaw, 2 * math.pi - dyaw)
+                assert dyaw / ds <= 1.0 / RHO + 1e-3
+
+    def test_same_seed_gives_same_result(self):
+        first = self._star(seed=7)
+        second = self._star(seed=7)
+        assert math.isclose(first.cost, second.cost)
+        assert len(first.edges) == len(second.edges)
