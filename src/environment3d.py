@@ -81,7 +81,25 @@ class Environment3D:
         if not self.obstacles:
             return min(x_max - x_min, y_max - y_min, z_max - z_min) / 10
 
-        half_sizes = [min(obstacle.radius,
-                          (obstacle.z_max - obstacle.z_min) / 2) + self.clearance
-                      for obstacle in self.obstacles]
+        half_sizes = [min(obstacle.radius,(obstacle.z_max - obstacle.z_min) / 2) + self.clearance for obstacle in self.obstacles]
         return min(half_sizes) / 2
+
+    def random_free_pose(self, rng: random.Random,
+                         max_attempts: int = 1000) -> Pose3:
+        """Reddetme ornekleme ile serbest bir poz uretir.
+
+        Bulunamamasi gecersiz girdi degil, cok dolu bir harita demek;
+        o yuzden ValueError degil RuntimeError.
+        """
+        x_min, y_min, z_min, x_max, y_max, z_max = self.bounds
+        for _ in range(max_attempts):
+            pose = (rng.uniform(x_min, x_max),
+                    rng.uniform(y_min, y_max),
+                    rng.uniform(z_min, z_max),
+                    rng.uniform(0, 2 * math.pi))
+            if self.is_free(pose):
+                return pose
+
+        raise RuntimeError(
+            f"{max_attempts} denemede serbest poz bulunamadi; "
+            f"engeller cok buyuk veya clearance cok yuksek olabilir")

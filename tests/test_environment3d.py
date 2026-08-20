@@ -180,3 +180,47 @@ class TestSuggestedStep:
     def test_step_is_positive(self):
         env = Environment3D(BOUNDS, (TOWER,), CLEARANCE)
         assert env.suggested_step() > 0.0
+
+
+class TestRandomFreePose:
+    def _env(self):
+        return Environment3D(BOUNDS, (TOWER,), CLEARANCE)
+
+    def test_returns_four_element_pose(self):
+        pose = self._env().random_free_pose(random.Random(1))
+        assert len(pose) == 4
+
+    def test_pose_is_free(self):
+        env = self._env()
+        rng = random.Random(2)
+        for _ in range(50):
+            assert env.is_free(env.random_free_pose(rng)) is True
+
+    def test_pose_is_inside_bounds(self):
+        env = self._env()
+        rng = random.Random(3)
+        for _ in range(50):
+            x, y, z, yaw = env.random_free_pose(rng)
+            assert 0.0 <= x <= 100.0
+            assert 0.0 <= y <= 100.0
+            assert 0.0 <= z <= 80.0
+            assert 0.0 <= yaw < 2 * math.pi
+
+    def test_same_seed_gives_same_pose(self):
+        env = self._env()
+        assert (env.random_free_pose(random.Random(9))
+                == env.random_free_pose(random.Random(9)))
+
+    def test_altitude_varies(self):
+        """z sabit kalmamali; rastgele ornekleniyor olmali."""
+        env = self._env()
+        rng = random.Random(4)
+        zs = {round(env.random_free_pose(rng)[2], 3) for _ in range(30)}
+        assert len(zs) > 20
+
+    def test_impossible_map_raises(self):
+        """Butun hacmi kaplayan engel: serbest poz bulunamaz."""
+        blocker = Cylinder(50.0, 50.0, 500.0, -100.0, 500.0)
+        env = Environment3D(BOUNDS, (blocker,), CLEARANCE)
+        with pytest.raises(RuntimeError):
+            env.random_free_pose(random.Random(5), max_attempts=20)
