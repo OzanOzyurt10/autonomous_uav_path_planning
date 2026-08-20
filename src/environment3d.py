@@ -1,9 +1,6 @@
 """3B ortam: silindir engeller ve irtifa sinirlari.
 
-dubins3d.py'yi import etmiyor. 2B'deki ayrimin aynisi: ortam ucak dinamigini
-bilmiyor, yalnizca "su nokta serbest mi" sorusunu cevapliyor.
-
-Nokta (x, y, z), poz (x, y, z, yaw); ikisi de kabul ediliyor, yaw yok sayilir.
+Nokta (x, y, z), poz (x, y, z, yaw); ikisi de kabul ediliyor
 """
 
 import math
@@ -19,9 +16,6 @@ Bounds3 = tuple[float, float, float, float, float, float]
 @dataclass(frozen=True)
 class Cylinder:
     """Sonlu yukseklikte dairesel engel: dikey bir silindir.
-
-    Yukseklik sonlu oldugu icin tepesinin ustunden ucmak serbest - 3B
-    planlamanin kazandirdigi sey bu. Emniyet payi dikeyde de uygulanir.
     """
 
     x: float
@@ -29,7 +23,7 @@ class Cylinder:
     radius: float
     z_min: float
     z_max: float
-
+    
     def __post_init__(self):
         if self.radius <= 0:
             raise ValueError(f"yaricap pozitif olmali, verilen: {self.radius}")
@@ -44,5 +38,26 @@ class Cylinder:
         [z_min, z_max] araliginda. Biri saglanmiyorsa nokta serbesttir.
         """
         horizontal_dist = math.hypot(point[0] - self.x, point[1] - self.y)
-        return (horizontal_dist <= self.radius + clearance
-                and self.z_min - clearance <= point[2] <= self.z_max + clearance)
+        return (horizontal_dist <= self.radius + clearance and self.z_min - clearance <= point[2] <= self.z_max + clearance)
+
+@dataclass(frozen=True)
+class Environment3D:
+    """Dikdortgen prizma sinirlar, silindir engeller, ortak emniyet payi."""
+
+    bounds: Bounds3
+    obstacles: tuple[Cylinder, ...]
+    clearance: float
+
+    def is_inside_bounds(self, point: Point3 | Pose3) -> bool:
+        """Nokta harita hacminin icinde mi; tavan ve taban dahil."""
+        x_min, y_min, z_min, x_max, y_max, z_max = self.bounds
+        return (x_min <= point[0] <= x_max
+                and y_min <= point[1] <= y_max
+                and z_min <= point[2] <= z_max)
+
+    def is_free(self, point: Point3 | Pose3) -> bool:
+        """Sinir icinde ve hicbir engelin emniyet payinda degil mi."""
+        if not self.is_inside_bounds(point):
+            return False
+        return not any(obstacle.contains(point, self.clearance)
+                       for obstacle in self.obstacles)

@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from src.environment3d import Cylinder      # her gorevde yeni isim eklenir
+from src.environment3d import Cylinder, Environment3D
 
 BOUNDS = (0.0, 0.0, 0.0, 100.0, 100.0, 80.0)
 CLEARANCE = 2.0
@@ -68,3 +68,57 @@ class TestCylinderContains:
     def test_accepts_four_element_pose(self):
         """Poz da nokta gibi kabul edilmeli; yaw yok sayilir."""
         assert TOWER.contains((50.0, 50.0, 15.0, 1.2)) is True
+
+
+class TestEnvironmentBounds:
+    def _env(self):
+        return Environment3D(BOUNDS, (TOWER,), CLEARANCE)
+
+    def test_inside(self):
+        assert self._env().is_inside_bounds((10.0, 10.0, 10.0)) is True
+
+    def test_corners_are_inside(self):
+        env = self._env()
+        assert env.is_inside_bounds((0.0, 0.0, 0.0)) is True
+        assert env.is_inside_bounds((100.0, 100.0, 80.0)) is True
+
+    @pytest.mark.parametrize("point", [
+        (-1.0, 50.0, 10.0), (101.0, 50.0, 10.0),
+        (50.0, -1.0, 10.0), (50.0, 101.0, 10.0),
+        (50.0, 50.0, -1.0), (50.0, 50.0, 81.0),
+    ])
+    def test_outside(self, point):
+        assert self._env().is_inside_bounds(point) is False
+
+    def test_altitude_ceiling_is_enforced(self):
+        """2B'de olmayan boyut: tavan."""
+        assert self._env().is_inside_bounds((50.0, 50.0, 79.0)) is True
+        assert self._env().is_inside_bounds((50.0, 50.0, 80.1)) is False
+
+
+class TestEnvironmentIsFree:
+    def _env(self):
+        return Environment3D(BOUNDS, (TOWER,), CLEARANCE)
+
+    def test_free_point(self):
+        assert self._env().is_free((10.0, 10.0, 10.0)) is True
+
+    def test_inside_obstacle(self):
+        assert self._env().is_free((50.0, 50.0, 15.0)) is False
+
+    def test_inside_clearance_band(self):
+        assert self._env().is_free((61.0, 50.0, 15.0)) is False
+
+    def test_above_obstacle_is_free(self):
+        """Kulenin tepesi 30 m, pay 2 m; 40 m'de serbest olmali."""
+        assert self._env().is_free((50.0, 50.0, 40.0)) is True
+
+    def test_out_of_bounds_is_not_free(self):
+        assert self._env().is_free((50.0, 50.0, 200.0)) is False
+
+    def test_no_obstacles_means_only_bounds_matter(self):
+        env = Environment3D(BOUNDS, (), CLEARANCE)
+        assert env.is_free((50.0, 50.0, 15.0)) is True
+
+    def test_accepts_pose(self):
+        assert self._env().is_free((10.0, 10.0, 10.0, 0.7)) is True
