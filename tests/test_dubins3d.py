@@ -92,3 +92,38 @@ class TestHelix:
     def test_word_is_valid(self):
         assert _helix((0.0, 0.0, 0.0), "L", 1.0, RHO).word == "LSL"
         assert _helix((0.0, 0.0, 0.0), "R", 1.0, RHO).word == "RSR"
+
+
+class TestLengths:
+    def test_no_helix_horizontal_equals_two_d(self):
+        p = _manual((0.0, 0.0, 0.0, 0.0), (100.0, 0.0, 0.0), 0, 0.099669)
+        assert math.isclose(p.horizontal_length, 100.0)
+
+    def test_helix_adds_full_turns(self):
+        p = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+        assert math.isclose(p.horizontal_length, 30.0 + 2 * TWO_PI_RHO)
+
+    def test_length_is_horizontal_over_cos_gamma(self):
+        p = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+        assert math.isclose(p.length, p.horizontal_length / math.cos(p.gamma))
+
+    def test_length_matches_pythagoras(self):
+        """length == sqrt(H^2 + dz^2), dz = H*tan(gamma)."""
+        p = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+        dz = p.horizontal_length * math.tan(p.gamma)
+        assert math.isclose(p.length, math.hypot(p.horizontal_length, dz))
+
+    def test_zero_gamma_length_equals_horizontal(self):
+        p = _manual((0.0, 0.0, 0.0, 0.0), (40.0, 0.0, 0.0), 0, 0.0)
+        assert math.isclose(p.length, 40.0)
+        assert math.isclose(p.horizontal_length, 40.0)
+
+    def test_descent_length_equals_climb_length(self):
+        up = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+        down = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, -0.212200)
+        assert math.isclose(up.length, down.length)
+
+    def test_known_values(self):
+        p = _manual((0.0, 0.0, 0.0, 0.0), (30.0, 0.0, 0.0), 2, 0.212200)
+        assert math.isclose(p.horizontal_length, 92.831853, abs_tol=1e-5)
+        assert math.isclose(p.length, 94.961850, abs_tol=1e-5)

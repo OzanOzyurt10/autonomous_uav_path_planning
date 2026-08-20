@@ -27,6 +27,18 @@ class DubinsPath3D:
     helix_turns: int
     gamma: float
 
+    @property
+    def horizontal_length(self) -> float:
+        """Yatayda katedilen toplam mesafe: 2B yol + helis turlari."""
+        turn = 2 * math.pi * self.horizontal.rho
+        return self.horizontal.length + self.helix_turns * turn
+
+    @property
+    def length(self) -> float:
+        """3B uzunluk; yatay mesafenin gamma acisiyla hipotenusu."""
+        return self.horizontal_length / math.cos(self.gamma)
+
+
 def _helix(start2: tuple[float, float, float], direction: str,
            length: float, rho: float) -> DubinsPath:
     """Verilen yonde length metre donen bir yol; bitis pozunu degistirmez.
