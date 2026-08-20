@@ -118,3 +118,11 @@ def airplane_path(start: Pose3, goal: Pose3, rho: float,
     total_horizontal = horizontal.length + helix_turns * turn
     gamma = math.atan2(alt_diff, total_horizontal)
     return DubinsPath3D(start, horizontal, helix_turns, gamma)
+
+def airplane_length(start: Pose3, goal: Pose3, rho: float,
+                    gamma_max: float) -> float:
+    """Yolun 3B uzunlugu (yatay degil); planlayicinin mesafe olcutu.
+
+    2B'deki path_length'in karsiligi. Dogrulama airplane_path icinde yapiliyor.
+    """
+    return airplane_path(start, goal, rho, gamma_max).length

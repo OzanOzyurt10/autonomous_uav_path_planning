@@ -6,7 +6,8 @@ import random
 import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
-from src.dubins3d import DubinsPath3D, _helix, airplane_path
+from src.dubins3d import (DubinsPath3D, _helix, airplane_length,
+                          airplane_path)
 
 RHO = 5.0
 GAMMA_MAX = math.radians(15.0)
@@ -327,3 +328,39 @@ class TestAirplanePathGeneral:
             p = airplane_path(start, goal, RHO, GAMMA_MAX)
             zs = [q[2] for q in p.sample(2.0)]
             assert zs == sorted(zs) or zs == sorted(zs, reverse=True)
+
+
+class TestAirplaneLength:
+    def test_matches_path_length(self):
+        start = (1.0, 2.0, 10.0, 0.3)
+        goal = (40.0, 20.0, 45.0, 1.1)
+        p = airplane_path(start, goal, RHO, GAMMA_MAX)
+        assert math.isclose(airplane_length(start, goal, RHO, GAMMA_MAX),
+                            p.length)
+
+    def test_returns_three_d_not_horizontal(self):
+        start = (0.0, 0.0, 0.0, 0.0)
+        goal = (30.0, 0.0, 20.0, 0.0)
+        p = airplane_path(start, goal, RHO, GAMMA_MAX)
+        value = airplane_length(start, goal, RHO, GAMMA_MAX)
+        assert value > p.horizontal_length
+        assert math.isclose(value, 94.961850, abs_tol=1e-5)
+
+    def test_level_flight_equals_two_d_length(self):
+        value = airplane_length((0.0, 0.0, 7.0, 0.0), (40.0, 0.0, 7.0, 0.0),
+                                RHO, GAMMA_MAX)
+        assert math.isclose(value, path_length((0.0, 0.0, 0.0),
+                                               (40.0, 0.0, 0.0), RHO))
+
+    def test_is_asymmetric(self):
+        """Dubins asimetrisi 3B'de de gecerli."""
+        a = (0.0, 0.0, 0.0, 0.0)
+        b = (0.0, 3.0, 5.0, math.pi / 2)
+        assert not math.isclose(airplane_length(a, b, 2.0, GAMMA_MAX),
+                                airplane_length(b, a, 2.0, GAMMA_MAX))
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_bad_rho_raises(self, bad):
+        with pytest.raises(ValueError):
+            airplane_length((0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 5.0, 0.0),
+                            bad, GAMMA_MAX)
