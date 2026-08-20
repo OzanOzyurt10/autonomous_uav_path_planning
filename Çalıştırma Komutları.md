@@ -14,3 +14,5 @@ rrt_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.rrt_demo
 
 
 rrt_maze_demo çalıştırmak için : ./venv/Scripts/python.exe -m notebooks.rrt_maze_demo
+
+dubins3d_demo çalıştırmak için : ./venv/Scripts/python.exe -m notebooks.dubins3d_demo
