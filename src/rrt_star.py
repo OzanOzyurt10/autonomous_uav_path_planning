@@ -149,15 +149,13 @@ def _rewire(env: Environment, nodes: list[Node], new_index: int,
     for j in candidates:
         if j == new_index:
             continue
-        new_edge = _try_connect(env, nodes[new_index].pose, nodes[j].pose,
-                                rho, step)
+        new_edge = _try_connect(env, nodes[new_index].pose, nodes[j].pose, rho, step)
         if new_edge is None:
             continue
         new_cost = nodes[new_index].cost + new_edge.length
         if new_cost >= nodes[j].cost:
             continue
-        nodes[j] = dataclasses.replace(nodes[j], parent=new_index,
-                                       cost=new_cost, path_from_parent=new_edge)
+        nodes[j] = dataclasses.replace(nodes[j], parent=new_index, cost=new_cost, path_from_parent=new_edge)
         _propagate_cost(nodes, j)
 
 
