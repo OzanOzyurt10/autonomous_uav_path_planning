@@ -10,6 +10,7 @@ Calistirma (proje kokunden, -m sart):
 
 import math
 import random
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,31 +23,47 @@ BOUNDS = (0.0, 0.0, 0.0, 100.0, 100.0, 80.0)
 CLEARANCE = 2.0
 RHO = 6.0
 GAMMA_MAX = math.radians(15.0)
-START = (10.0, 10.0, 20.0, math.radians(45))
-GOAL = (90.0, 75.0, 50.0, 0.0)
-MAX_ITERATIONS = 1000
-GOAL_BIAS = 0.1
-SEED = 2                 # bu tohumda rota alcak engelin uzerinden geciyor
+START = (8.0, 50.0, 15.0, 0.0)          # doguya bakiyor
+GOAL = (92.0, 50.0, 55.0, 0.0)
+MAX_ITERATIONS = 2500                    # kapilar dar, biraz daha butce lazim
+GOAL_BIAS = 0.10
+MAX_EDGE_LENGTH = 30.0                   # dar kapida uzun kenar surekli carpiyor
+REFINE_STEPS = 8
+SEED = 1
+SMOKE_SEEDS = (1, 2, 3, 4, 5, 6, 7)
 
-# Tavana kadar cikan kuleler: irtifa yardim etmez, etrafindan dolasilir
+# Duvar A (x=35): kapi y ~ 59-75 arasi acik.
+# Duvar B (x=68): kapi y ~ 27-41 arasi acik. Kapilar kaydirildi -> caprazlama gecis.
 TALL = (
-    Cylinder(30.0, 30.0, 9.0, 0.0, 80.0),
-    Cylinder(62.0, 18.0, 8.0, 0.0, 80.0),
-    Cylinder(22.0, 66.0, 8.0, 0.0, 80.0),
-    Cylinder(72.0, 62.0, 9.0, 0.0, 80.0),
-    Cylinder(48.0, 92.0, 7.0, 0.0, 80.0),
-    Cylinder(88.0, 34.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0,  4.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0, 16.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0, 28.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0, 40.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0, 52.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0, 82.0, 7.0, 0.0, 80.0),
+    Cylinder(35.0, 94.0, 7.0, 0.0, 80.0),
+
+    Cylinder(68.0,  8.0, 7.0, 0.0, 80.0),
+    Cylinder(68.0, 20.0, 7.0, 0.0, 80.0),
+    Cylinder(68.0, 48.0, 7.0, 0.0, 80.0),
+    Cylinder(68.0, 60.0, 7.0, 0.0, 80.0),
+    Cylinder(68.0, 72.0, 7.0, 0.0, 80.0),
+    Cylinder(68.0, 84.0, 7.0, 0.0, 80.0),
+    Cylinder(68.0, 96.0, 7.0, 0.0, 80.0),
 )
 
-# Alcak engeller: rota bunlarin uzerinden geciyor
+# Alcak engeller: kapiya giden en kisa hatlarin uzerine oturuyor,
+# etrafindan dolasmak yerine ustunden gecmek daha ucuz kaliyor.
 SHORT = (
-    Cylinder(50.0, 50.0, 14.0, 0.0, 25.0),
-    Cylinder(78.0, 12.0, 10.0, 0.0, 22.0),
+    Cylinder(20.0, 62.0, 11.0, 0.0, 24.0),   # A kapisina yaklasma hatti
+    Cylinder(50.0, 50.0, 14.0, 0.0, 30.0),   # iki duvar arasi ortada
+    Cylinder(82.0, 42.0, 12.0, 0.0, 28.0),   # B kapisi cikisi -> hedef
 )
 
 TALL_COLOR = "dimgray"
 SHORT_COLOR = "goldenrod"
 ROUTE_COLOR = "crimson"
+WIDE_ROUTE_COLOR = "darkorange"
 TREE_COLOR = "lightgray"
 
 
@@ -75,6 +92,13 @@ def draw_cylinder_3d(ax, cyl, color):
     ax.plot(xs, ys, [cyl.z_max] * len(xs), color=color, linewidth=1.0)
 
 
+def _edge_color(edge):
+    """Refine ile genis yaricapa gecen kenari farkli renkle goster."""
+    if edge.horizontal.rho > RHO + 1e-9:
+        return WIDE_ROUTE_COLOR
+    return ROUTE_COLOR
+
+
 def draw_3d(ax, env, result):
     """a. Tam 3B perspektif."""
     for cyl in env.obstacles:
@@ -90,7 +114,12 @@ def draw_3d(ax, env, result):
     for edge in result.edges:
         pts = edge.sample(0.5)
         ax.plot([p[0] for p in pts], [p[1] for p in pts],
-                [p[2] for p in pts], color=ROUTE_COLOR, linewidth=2.5)
+                [p[2] for p in pts], color=_edge_color(edge), linewidth=3.0)
+
+        floor = env.bounds[2]
+        ax.plot([p[0] for p in pts], [p[1] for p in pts],
+                [floor] * len(pts), color=_edge_color(edge),
+                linewidth=1.0, alpha=0.25)
 
     ax.scatter(*START[:3], color="royalblue", s=60, label="baslangic")
     ax.scatter(*GOAL[:3], color="seagreen", s=60, label="hedef")
@@ -101,8 +130,12 @@ def draw_3d(ax, env, result):
     ax.set_zlim(z_min, z_max)
     ax.set_xlabel("x (dogu, m)")
     ax.set_ylabel("y (kuzey, m)")
-    ax.set_zlabel("z (irtifa, m)")
-    ax.set_title("a. Tam 3B perspektif")
+    # z etiketi 3B eksenin sagina dusuyor ve yan panelin etiketiyle
+    # cakisiyordu; eksen adlari baslikta veriliyor
+    ax.set_zlabel("")
+    ax.view_init(elev=28, azim=-55)
+    ax.set_box_aspect((1.0, 1.0, 0.62))
+    ax.set_title("a. Tam 3B perspektif   [dikey eksen: z, irtifa (m)]")
     ax.legend(loc="upper left")
 
 
@@ -134,7 +167,7 @@ def draw_side(ax, env, result):
     for edge in result.edges:
         pts = edge.sample(0.5)
         ax.plot([p[0] for p in pts], [p[2] for p in pts],
-                color=ROUTE_COLOR, linewidth=2.5, zorder=4)
+                color=_edge_color(edge), linewidth=2.8, zorder=4)
 
     ax.plot(START[0], START[2], "o", color="royalblue", markersize=8, zorder=5)
     ax.plot(GOAL[0], GOAL[2], "o", color="seagreen", markersize=8, zorder=5)
@@ -144,11 +177,15 @@ def draw_side(ax, env, result):
     ax.set_ylim(z_min, z_max)
     ax.set_xlabel("x (dogu, m)")
     ax.set_ylabel("z (irtifa, m)")
-    # alcak engelin uzerinden gecisi isaretle: demonun asil noktasi
-    low = min((c for c in env.obstacles if c.z_max <= 40), key=lambda c: c.x)
-    over = [p[2] for edge in result.edges for p in edge.sample(0.5)
-            if math.hypot(p[0] - low.x, p[1] - low.y) <= low.radius]
-    if over:
+    # Alcak engelin uzerinden gecisi isaretle: demonun asil noktasi.
+    flyovers = []
+    for low in (c for c in env.obstacles if c.z_max <= 40):
+        over = [p[2] for edge in result.edges for p in edge.sample(0.5)
+                if math.hypot(p[0] - low.x, p[1] - low.y) <= low.radius]
+        if over:
+            flyovers.append((low, over))
+    if flyovers:
+        low, over = max(flyovers, key=lambda item: len(item[1]))
         ax.annotate(f"alcak engelin ustunden\n"
                     f"tepe {low.z_max:.0f} m, rota {min(over):.0f}-{max(over):.0f} m",
                     xy=(low.x, sum(over) / len(over)), xytext=(12, 62),
@@ -180,7 +217,7 @@ def draw_top(ax, env, result):
     for edge in result.edges:
         pts = edge.sample(0.5)
         ax.plot([p[0] for p in pts], [p[1] for p in pts],
-                color=ROUTE_COLOR, linewidth=2.5, zorder=4)
+                color=_edge_color(edge), linewidth=2.8, zorder=4)
 
     ax.plot(START[0], START[1], "o", color="royalblue", markersize=8, zorder=5)
     ax.plot(GOAL[0], GOAL[1], "o", color="seagreen", markersize=8, zorder=5)
@@ -210,13 +247,46 @@ def flyover_report(env, result):
     return lines
 
 
+def refine_report(result):
+    """Refine'in hangi kenarlarda genis yaricap sectigini ozetler."""
+    lines = []
+    for i, edge in enumerate(result.edges, start=1):
+        if edge.horizontal.rho <= RHO + 1e-9:
+            continue
+        lines.append(f"{i}. kenar refine: rho {RHO:.1f} -> "
+                     f"{edge.horizontal.rho:.1f} m, "
+                     f"gamma={math.degrees(edge.gamma):.1f} derece")
+    return lines
+
+
+def smoke_report(env):
+    """Ayni senaryo farkli tohumlarda en azindan rota buluyor mu?"""
+    lines = []
+    all_found = True
+    for seed in SMOKE_SEEDS:
+        result = plan3d(START, GOAL, env, RHO, GAMMA_MAX,
+                        max_iterations=MAX_ITERATIONS,
+                        goal_bias=GOAL_BIAS,
+                        max_edge_length=MAX_EDGE_LENGTH,
+                        refine_steps=REFINE_STEPS,
+                        rng=random.Random(seed))
+        all_found = all_found and result.found
+        cost = f"{result.cost:.1f} m" if result.found else "-"
+        lines.append(f"seed={seed}: bulundu={result.found}, "
+                     f"dugum={len(result.tree)}, kenar={len(result.edges)}, "
+                     f"uzunluk={cost}")
+    return all_found, lines
+
+
 def main():
     env = Environment3D(BOUNDS, TALL + SHORT, CLEARANCE)
     result = plan3d(START, GOAL, env, RHO, GAMMA_MAX,
                     max_iterations=MAX_ITERATIONS, goal_bias=GOAL_BIAS,
+                    max_edge_length=MAX_EDGE_LENGTH,
+                    refine_steps=REFINE_STEPS,
                     rng=random.Random(SEED))
 
-    fig = plt.figure(figsize=(20, 9))
+    fig = plt.figure(figsize=(20, 10))
     ax_3d = fig.add_subplot(1, 3, 1, projection="3d")
     ax_side = fig.add_subplot(1, 3, 2)
     ax_top = fig.add_subplot(1, 3, 3)
@@ -229,16 +299,24 @@ def main():
     fig.suptitle(
         f"3B Dubins RRT* rotasi   "
         f"(rho={RHO} m, gamma_max={math.degrees(GAMMA_MAX):.0f} derece, "
-        f"dugum={len(result.tree)}, uzunluk={cost_text})   "
-        f"gri: tavana kadar cikan engeller, sari: ustunden ucularak gecilen alcak engeller",
+        f"refine={REFINE_STEPS}, dugum={len(result.tree)}, "
+        f"uzunluk={cost_text})   "
+        f"kirmizi: normal kenar, turuncu: genis yaricap refine",
         fontsize=14)
-    plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
-    plt.savefig("results/rrt3d_demo.png", dpi=150)
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94), w_pad=3.0)
+    Path("results").mkdir(exist_ok=True)
+    plt.savefig("results/rrt3d_demo.png", dpi=170)
     plt.close()
 
     print(f"bulundu={result.found}, dugum={len(result.tree)}, "
           f"kenar={len(result.edges)}, uzunluk={cost_text}")
     for line in flyover_report(env, result):
+        print("  " + line)
+    for line in refine_report(result):
+        print("  " + line)
+    all_found, lines = smoke_report(env)
+    print(f"smoke: tum tohumlar bulundu={all_found}")
+    for line in lines:
         print("  " + line)
     print("kaydedildi: results/rrt3d_demo.png")
 

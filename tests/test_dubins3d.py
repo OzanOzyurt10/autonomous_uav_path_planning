@@ -6,8 +6,8 @@ import random
 import pytest
 
 from src.dubins import DubinsPath, path_length, shortest_path
-from src.dubins3d import (DubinsPath3D, _helix, airplane_length,
-                          airplane_path)
+from src.dubins3d import (DubinsPath3D, _helix, _widened_horizontal,
+                          airplane_length, airplane_path)
 
 RHO = 5.0
 GAMMA_MAX = math.radians(15.0)
@@ -364,3 +364,141 @@ class TestAirplaneLength:
         with pytest.raises(ValueError):
             airplane_length((0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 5.0, 0.0),
                             bad, GAMMA_MAX)
+
+
+# --- Orta irtifa cozumu: genis yaricapla tirmanis ---
+
+def _needs_helix(start, goal, rho, gamma_max):
+    """Bu poz cifti helis durumuna dusuyor mu (refine kapaliyken)."""
+    return airplane_path(start, goal, rho, gamma_max).helix_turns > 0
+
+
+# Kisa yatay mesafe, buyuk irtifa farki -> helis durumu.
+# Heading'ler ters: yol donmek zorunda, dolayisiyla uzunlugu yaricapla
+# birlikte buyuyor. Ayni heading'li duz bir ciftte yol duz cizgi olur ve
+# yaricaptan bagimsizdir - orada genisletme ise yaramaz (asagida test var).
+CLIMB_START = (0.0, 0.0, 0.0, 0.0)
+CLIMB_GOAL = (30.0, 0.0, 25.0, math.pi)
+
+WIDE_START2 = (0.0, 0.0, 0.0)
+WIDE_GOAL2 = (30.0, 0.0, math.pi)
+WIDE_REQUIRED = 25.0 / math.tan(GAMMA_MAX)
+
+
+class TestWidenedHorizontal:
+    """rho'dan buyuk yaricapla, helis gerekmeyen yatay yol arar."""
+
+    def test_returns_none_when_no_climb_needed(self):
+        """Irtifa farki yoksa genisletmeye gerek yok."""
+        assert _widened_horizontal((0.0, 0.0, 0.0), (40.0, 0.0, 0.0),
+                                   RHO, 0.0, 8) is None
+
+    def test_found_path_reaches_required_length(self):
+        path = _widened_horizontal(WIDE_START2, WIDE_GOAL2, RHO,
+                                   WIDE_REQUIRED, 8)
+        assert path is not None
+        assert path.length >= WIDE_REQUIRED - 1e-9
+
+    def test_found_radius_is_at_least_rho(self):
+        """Yaricap asla rho'nun altina inmemeli: ucagin fiziksel siniri."""
+        path = _widened_horizontal(WIDE_START2, WIDE_GOAL2, RHO,
+                                   WIDE_REQUIRED, 8)
+        assert path.rho >= RHO - 1e-12
+
+    def test_endpoints_are_preserved(self):
+        path = _widened_horizontal(WIDE_START2, WIDE_GOAL2, RHO,
+                                   WIDE_REQUIRED, 8)
+        end = path.end_pose()
+        assert math.isclose(end[0], WIDE_GOAL2[0], abs_tol=1e-6)
+        assert math.isclose(end[1], WIDE_GOAL2[1], abs_tol=1e-6)
+
+    def test_more_steps_never_gives_a_longer_path(self):
+        """Daha cok ikili arama adimi daha siki yakinsar."""
+        coarse = _widened_horizontal(WIDE_START2, WIDE_GOAL2, RHO,
+                                     WIDE_REQUIRED, 2)
+        fine = _widened_horizontal(WIDE_START2, WIDE_GOAL2, RHO,
+                                   WIDE_REQUIRED, 10)
+        assert fine.length <= coarse.length + 1e-9
+
+    def test_zero_steps_returns_none(self):
+        """Kapali: hic arama yapilmaz."""
+        assert _widened_horizontal(WIDE_START2, WIDE_GOAL2, RHO,
+                                   WIDE_REQUIRED, 0) is None
+
+    def test_returns_none_when_widening_cannot_help(self):
+        """Ayni heading'li duz cift: yol duz cizgi, yaricaptan bagimsiz.
+
+        Uzunluk hicbir yaricapta required'a ulasmadigi icin arama
+        sinirlanmali ve None donmeli - sonsuz donguye girmemeli.
+        """
+        assert _widened_horizontal((0.0, 0.0, 0.0), (30.0, 0.0, 0.0),
+                                   RHO, WIDE_REQUIRED, 8) is None
+
+
+class TestAirplanePathRefine:
+    def test_default_is_off(self):
+        """Varsayilan davranis degismedi: helis durumu hala helis kullaniyor."""
+        path = airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX)
+        assert path.helix_turns > 0
+
+    def test_refine_removes_the_helix(self):
+        path = airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX,
+                             refine_steps=8)
+        assert path.helix_turns == 0
+        assert path.horizontal.rho > RHO
+
+    def test_refine_is_never_longer(self):
+        """Iki secenegin kisasi alindigi icin sonuc kotulesemez."""
+        plain = airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX)
+        refined = airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX,
+                                refine_steps=8)
+        assert refined.length <= plain.length + 1e-9
+
+    def test_refine_reaches_the_goal(self):
+        path = airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX,
+                             refine_steps=8)
+        assert_pose3_close(path.end_pose(), CLIMB_GOAL)
+
+    def test_refine_respects_the_climb_limit(self):
+        path = airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX,
+                             refine_steps=8)
+        assert abs(path.gamma) <= GAMMA_MAX + 1e-12
+
+    def test_refine_does_not_touch_non_helix_cases(self):
+        """Helis gerekmeyen cift refine ile de ayni yolu vermeli."""
+        plain = airplane_path((0.0, 0.0, 0.0, 0.0), (100.0, 0.0, 10.0, 0.0),
+                              RHO, GAMMA_MAX)
+        refined = airplane_path((0.0, 0.0, 0.0, 0.0), (100.0, 0.0, 10.0, 0.0),
+                                RHO, GAMMA_MAX, refine_steps=8)  # noqa: E501
+        assert refined.horizontal.rho == RHO
+        assert math.isclose(refined.length, plain.length)
+
+    @pytest.mark.parametrize("bad", [-1, -5])
+    def test_negative_refine_steps_raises(self, bad):
+        with pytest.raises(ValueError):
+            airplane_path(CLIMB_START, CLIMB_GOAL, RHO, GAMMA_MAX,
+                          refine_steps=bad)
+
+    def test_random_pairs_still_reach_the_goal(self):
+        """Uctan uca: refine acikken de hedefe variyor."""
+        rng = random.Random(3)
+        for _ in range(40):
+            a = (rng.uniform(-50, 50), rng.uniform(-50, 50),
+                 rng.uniform(0, 100), rng.uniform(0, 2 * math.pi))
+            b = (rng.uniform(-50, 50), rng.uniform(-50, 50),
+                 rng.uniform(0, 100), rng.uniform(0, 2 * math.pi))
+            path = airplane_path(a, b, RHO, GAMMA_MAX, refine_steps=8)
+            assert_pose3_close(path.end_pose(), b)
+            assert abs(path.gamma) <= GAMMA_MAX + 1e-12
+
+    def test_random_pairs_never_longer_than_plain(self):
+        rng = random.Random(4)
+        for _ in range(40):
+            a = (rng.uniform(-50, 50), rng.uniform(-50, 50),
+                 rng.uniform(0, 100), rng.uniform(0, 2 * math.pi))
+            b = (rng.uniform(-50, 50), rng.uniform(-50, 50),
+                 rng.uniform(0, 100), rng.uniform(0, 2 * math.pi))
+            plain = airplane_path(a, b, RHO, GAMMA_MAX)
+            refined = airplane_path(a, b, RHO, GAMMA_MAX, refine_steps=8)
+            assert refined.length <= plain.length + 1e-9
+

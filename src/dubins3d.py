@@ -89,8 +89,36 @@ def _helix(start2: tuple[float, float, float], direction: str,
     lengths = (length, 0.0, 0.0)
     return DubinsPath(start2, word, lengths, rho)
 
+def _widened_horizontal(start2: tuple[float, float, float],
+                        goal2: tuple[float, float, float],
+                        rho: float, required: float,
+                        steps: int) -> DubinsPath | None:
+    if steps <= 0 or required <=0 :
+        return None
+    hi = rho
+    
+    for _ in range (7) : 
+        if shortest_path(start2,goal2,hi).length < required:
+            hi *=2
+        else:
+            break
+
+    
+    if hi == rho * (128):
+        return None
+    lo = rho
+    for _ in range (steps) :
+        if shortest_path(start2,goal2,(hi+lo) / 2).length >= required:
+            hi = (hi+lo) / 2
+        else:
+            lo = (hi+lo) / 2  
+        
+
+    return shortest_path(start2,goal2,hi)
+
+
 def airplane_path(start: Pose3, goal: Pose3, rho: float,
-                  gamma_max: float) -> DubinsPath3D:
+                  gamma_max: float,refine_steps: int = 0) -> DubinsPath3D:
     """start'tan goal'a tirmanma acisi sinirina uyan bir 3B yol kurar.
 
     Yatay yol irtifayi kazanmaya yetmiyorsa baslangicta tam turlar eklenir.
@@ -102,6 +130,8 @@ def airplane_path(start: Pose3, goal: Pose3, rho: float,
         raise ValueError(f"rho pozitif olmali: {rho}")
     if gamma_max <= 0 or gamma_max >= math.pi / 2:
         raise ValueError(f"gamma_max (0, pi/2) araliginda olmali: {gamma_max}")
+    if refine_steps < 0 :
+        raise ValueError(f"adim pozitif olmali: {refine_steps}")
 
     pose_s = (start[0], start[1], start[3])
     pose_g = (goal[0], goal[1], goal[3])
@@ -114,12 +144,27 @@ def airplane_path(start: Pose3, goal: Pose3, rho: float,
     helix_turns = 0
     if horizontal.length < required:
         helix_turns = math.ceil((required - horizontal.length) / turn)
-
     total_horizontal = horizontal.length + helix_turns * turn
+    plain_length = math.hypot(total_horizontal, alt_diff)
+
+    if helix_turns > 0 and refine_steps > 0:
+        new_path = _widened_horizontal(pose_s, pose_g, rho, required,refine_steps)
+        if new_path is not None:
+            new_length = math.hypot(new_path.length, alt_diff)
+            if new_length <= plain_length:
+                horizontal = new_path
+                helix_turns = 0
+                total_horizontal = horizontal.length
+
     gamma = math.atan2(alt_diff, total_horizontal)
     return DubinsPath3D(start, horizontal, helix_turns, gamma)
 
 def airplane_length(start: Pose3, goal: Pose3, rho: float,
                     gamma_max: float) -> float:
-    """Yolun 3B uzunlugu (yatay degil); planlayicinin mesafe olcutu."""
+    """Yolun 3B uzunlugu (yatay degil); planlayicinin mesafe olcutu.
+
+    refine_steps bilerek yok: _nearest yalnizca siralama yapiyor ve helis
+    sismesi adaylarin cogunu benzer sekilde etkiledigi icin siralama korunuyor.
+    Olculdu - refine'li olcut kazanc vermedi, 1.4-2.4 kat yavaslatti.
+    """
     return airplane_path(start, goal, rho, gamma_max).length

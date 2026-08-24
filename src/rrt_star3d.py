@@ -27,14 +27,15 @@ class RRTResult3:
 
 
 def _try_connect(env: Environment3D, from_pose: Pose3, to_pose: Pose3,
-                 rho: float, gamma_max: float, step: float) -> DubinsPath3D | None:
-    path = airplane_path(from_pose,to_pose,rho,gamma_max)
+                 rho: float, gamma_max: float, step: float,
+                 refine_steps: int = 0) -> DubinsPath3D | None:
+    path = airplane_path(from_pose, to_pose, rho, gamma_max, refine_steps)
     if env.is_path_free(path.sample(step)):
         return path
     return None
 
 def _steer(from_pose: Pose3, to_pose: Pose3, rho: float, gamma_max: float,
-           max_edge_length: float | None) -> Pose3:
+           max_edge_length: float | None, refine_steps: int = 0) -> Pose3:
     """OPTIMIZASYON - adimli ilerleme (steering).
 
     Uzak bir ornege tam yol kurmak cogu zaman reddediliyor ve o yineleme
@@ -48,7 +49,7 @@ def _steer(from_pose: Pose3, to_pose: Pose3, rho: float, gamma_max: float,
     if max_edge_length is None:
         return to_pose
 
-    path = airplane_path(from_pose, to_pose, rho, gamma_max)
+    path = airplane_path(from_pose, to_pose, rho, gamma_max, refine_steps)
     if not path.length > max_edge_length:
         return to_pose
     return path.interpolate(max_edge_length)
@@ -121,7 +122,8 @@ def _neighbours(nodes: list[Node3], pose: Pose3, radius: float) -> list[int]:
 def _choose_parent(env: Environment3D, nodes: list[Node3], pose: Pose3,
                    candidates: list[int], rho: float, gamma_max: float,
                    step: float,
-                   fallback: tuple[int, DubinsPath3D]) -> tuple[int, DubinsPath3D]:
+                   fallback: tuple[int, DubinsPath3D],
+                   refine_steps: int = 0) -> tuple[int, DubinsPath3D]:
 
     best_index , best_edge = fallback
     best_cost = nodes[best_index].cost + best_edge.length
@@ -134,7 +136,8 @@ def _choose_parent(env: Environment3D, nodes: list[Node3], pose: Pose3,
         # Sonuc degismiyor, yalnizca gereksiz hesap atlaniyor.
         if not nodes[j].cost + _euclid(nodes[j].pose, pose) < best_cost:
             continue    
-        edge = _try_connect(env,nodes[j].pose,pose,rho,gamma_max,step)
+        edge = _try_connect(env, nodes[j].pose, pose, rho, gamma_max, step,
+                            refine_steps)
         if edge is None:
             continue
         if edge.length + nodes[j].cost < best_cost:
@@ -161,7 +164,7 @@ def _propagate_cost(nodes: list[Node3], index: int) -> None:
 
 def _rewire(env: Environment3D, nodes: list[Node3], new_index: int,
             candidates: list[int], rho: float, gamma_max: float,
-            step: float) -> None:
+            step: float, refine_steps: int = 0) -> None:
     for j in candidates:
         if j == new_index:
             continue
@@ -170,7 +173,8 @@ def _rewire(env: Environment3D, nodes: list[Node3], new_index: int,
         # iyilestirmiyorsa yeniden baglama imkansiz; _try_connect atlaniyor.
         if not (nodes[new_index].cost+ _euclid(nodes[new_index].pose, nodes[j].pose) < nodes[j].cost):
             continue
-        edge = _try_connect(env,nodes[new_index].pose,nodes[j].pose,rho,gamma_max,step)
+        edge = _try_connect(env, nodes[new_index].pose, nodes[j].pose, rho,
+                            gamma_max, step, refine_steps)
         if edge is None:
             continue
         cost = edge.length + nodes[new_index].cost
@@ -187,7 +191,8 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
            max_edge_length: float | None = None,
            stop_on_first_solution: bool = False,
            radius_gamma: float = 80.0,
-           radius_cap: float = 30.0) -> RRTResult3:
+           radius_cap: float = 30.0,
+           refine_steps: int = 0) -> RRTResult3:
     """start'tan goal'a carpismasiz bir Dubins airplane rotasi arar (3B RRT*).
     """
     if rho <= 0.0:
@@ -211,6 +216,8 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
     
     if max_edge_length is not None and max_edge_length <= 0.0:
         raise ValueError(f"max_edge_length pozitif olmali: {max_edge_length}")
+    if refine_steps < 0:
+        raise ValueError(f"refine_steps negatif olamaz: {refine_steps}")
 
     if step is None:
         step = env.suggested_step()
@@ -225,8 +232,9 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
         i = _nearest(nodes, target, rho, gamma_max)
         # adimli ilerleme: uzak ornege tam yol yerine ara poza gidilir
         target = _steer(nodes[i].pose, target, rho, gamma_max,
-                        max_edge_length)
-        edge = _try_connect(env, nodes[i].pose, target, rho, gamma_max, step)
+                        max_edge_length, refine_steps)
+        edge = _try_connect(env, nodes[i].pose, target, rho, gamma_max, step,
+                            refine_steps)
         if edge is None:
             continue
 
@@ -234,12 +242,15 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
         # yeni dugum kendi komsusu olmasin
         radius = _neighbour_radius(len(nodes), radius_gamma, radius_cap)
         cands = _neighbours(nodes, target, radius)
-        i, edge = _choose_parent(env, nodes, target, cands, rho, gamma_max,step, (i, edge))
+        i, edge = _choose_parent(env, nodes, target, cands, rho, gamma_max,
+                                 step, (i, edge), refine_steps)
 
         nodes.append(Node3(target, i, nodes[i].cost + edge.length, edge))
-        _rewire(env, nodes, len(nodes) - 1, cands, rho, gamma_max, step)
+        _rewire(env, nodes, len(nodes) - 1, cands, rho, gamma_max, step,
+                refine_steps)
 
-        goal_edge = _try_connect(env, target, goal, rho, gamma_max, step)
+        goal_edge = _try_connect(env, target, goal, rho, gamma_max, step,
+                                 refine_steps)
         if goal_edge is None:
             continue
 

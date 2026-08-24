@@ -18,3 +18,5 @@ rrt_maze_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.rrt
 dubins3d_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.dubins3d_demo
 
 rrt3d_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.rrt3d_demo
+
+rrt3d_plotly çalıştırmak için (etkileşimli HTML) : ./venv/Scripts/python.exe -m notebooks.rrt3d_plotly
