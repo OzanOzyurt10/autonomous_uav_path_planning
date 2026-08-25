@@ -267,3 +267,44 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
     edges = _extract_path(nodes, index, goal_edge)
     cost = nodes[index].cost + goal_edge.length
     return RRTResult3(True, edges, cost, max_iterations, nodes)
+
+
+def shortcut(edges: list[DubinsPath3D], env: Environment3D, rho: float,
+             gamma_max: float, step: float, refine_steps: int = 0,
+             max_rounds: int = 10) -> list[DubinsPath3D]:
+    """Rotadaki gereksiz duraklari atarak kisaltir; girdi listesi degismez.
+
+    Ardisik olmayan iki pozu dogrudan baglamayi dener, bag carpismasiz ve
+    aradaki kenarlarin toplamindan kisaysa kabul eder. Uzunluk kiyasi sart:
+    3B'de dogrudan bag helis turu atmak zorunda kalip daha uzun olabiliyor.
+    Kazanc kalmayana ya da max_rounds dolana kadar tekrarlanir.
+    """
+    if not edges:
+        return []
+
+    edges = list(edges)
+    poses = [edge.start for edge in edges]
+    poses.append(edges[-1].end_pose())
+
+    for _ in range(max_rounds):
+        changed = False
+        i = 0
+        
+        while i + 2 <= len(edges):
+            j = len(edges)
+            while j >= i + 2:
+                
+                new_edge = _try_connect(env, poses[i], poses[j], rho,gamma_max, step, refine_steps)
+                if (new_edge is not None
+                        and new_edge.length < sum(e.length for e in edges[i:j])):
+                    edges[i:j] = [new_edge]
+                    del poses[i + 1:j]
+                    changed = True
+                    break
+                j -= 1
+            i += 1
+        if not changed:
+            break
+
+    return edges
+

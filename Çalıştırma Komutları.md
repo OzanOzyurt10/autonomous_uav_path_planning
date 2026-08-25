@@ -19,4 +19,9 @@ dubins3d_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.dub
 
 rrt3d_demo çalıştırmak için : .\venv\Scripts\python.exe -m notebooks.rrt3d_demo
 
-rrt3d_plotly çalıştırmak için (etkileşimli HTML) : ./venv/Scripts/python.exe -m notebooks.rrt3d_plotly
+   açık arazi haritasıyla : .\venv\Scripts\python.exe -m notebooks.rrt3d_demo acik
+
+
+rrt3d_plotly çalıştırmak için (etkileşimli HTML) : .\venv\Scripts\python.exe -m notebooks.rrt3d_plotly
+
+   açık arazi haritasıyla : .\venv\Scripts\python.exe -m notebooks.rrt3d_plotly acik

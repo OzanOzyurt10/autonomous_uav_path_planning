@@ -1,35 +1,32 @@
 """3B rotayi tarayicida acilan, dondurulup yakinlastirilabilir HTML'e cevirir.
 
-matplotlib penceresi (rrt3d_view.py) yalniz bu bilgisayarda acilir ve binlerce
-dalda takilir. Bu betik tek dosyalik bir HTML uretir: tarayicida akici doner,
-uzerine gelince deger gosterir, ve oldugu gibi paylasilabilir.
+Tek dosyalik bir HTML uretir: tarayicida akici doner, uzerine gelince deger
+gosterir, oldugu gibi paylasilabilir. Kisaltma oncesi rota kesikli gri olarak
+ayri bir iz; efsaneden acilip kapanabiliyor.
 
-Harita, engeller ve planlayici ayarlari rrt3d_demo'dan aliniyor - iki dosya
-birbirinden ayrilmasin diye.
+Harita, ucus kisitlari ve planlayici ayarlari rrt3d_demo'dan aliniyor - PNG
+ile HTML birbirinden ayrilmasin diye. Harita secimi de oradaki SCENE ile,
+ya da komut satirindan.
 
 Calistirma (proje kokunden, -m sart):
     ./venv/Scripts/python.exe -m notebooks.rrt3d_plotly
+    ./venv/Scripts/python.exe -m notebooks.rrt3d_plotly acik
 """
 
 import math
-import random
+import sys
 
 import plotly.graph_objects as go
 
-from src.environment3d import Environment3D
-from src.rrt_star3d import plan3d
-
-from notebooks.rrt3d_demo import (BOUNDS, CLEARANCE, GAMMA_MAX, GOAL,
-                                  GOAL_BIAS, MAX_EDGE_LENGTH, MAX_ITERATIONS,
-                                  REFINE_STEPS, RHO, SEED, SHORT, START, TALL)
-
-OUTPUT = "results/rrt3d_view.html"
+from notebooks.rrt3d_demo import (GAMMA_MAX, REFINE_STEPS, RHO, SCENE, SCENES,
+                                  SEED, cut_of, make_env, plan_scene)
 
 TALL_COLOR = "dimgray"
 SHORT_COLOR = "goldenrod"
 ROUTE_COLOR = "crimson"
 WIDE_ROUTE_COLOR = "darkorange"
 TREE_COLOR = "lightgray"
+BEFORE_COLOR = "dimgray"
 
 TREE_STEP = 4.0        # agac kaba orneklenir; binlerce dal var
 ROUTE_STEP = 0.4
@@ -76,10 +73,26 @@ def tree_trace(result):
                         visible=True if TREE_VISIBLE_AT_START else "legendonly")
 
 
-def route_traces(result):
+def before_trace(edges):
+    """Kisaltma oncesi rota; tek iz, kesikli."""
+    xs, ys, zs = [], [], []
+    for edge in edges:
+        for p in edge.sample(ROUTE_STEP):
+            xs.append(p[0])
+            ys.append(p[1])
+            zs.append(p[2])
+        xs.append(None)
+        ys.append(None)
+        zs.append(None)
+    return go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                        line=dict(color=BEFORE_COLOR, width=3, dash="dash"),
+                        name="kisaltma oncesi", hoverinfo="skip")
+
+
+def route_traces(edges):
     """Rotayi iki ize ayirir: normal kenarlar ve genis yaricapli (refine)."""
     groups = {ROUTE_COLOR: ([], [], []), WIDE_ROUTE_COLOR: ([], [], [])}
-    for edge in result.edges:
+    for edge in edges:
         wide = edge.horizontal.rho > RHO + 1e-9
         xs, ys, zs = groups[WIDE_ROUTE_COLOR if wide else ROUTE_COLOR]
         for p in edge.sample(ROUTE_STEP):
@@ -90,8 +103,8 @@ def route_traces(result):
         ys.append(None)
         zs.append(None)
 
-    names = {ROUTE_COLOR: "rota (normal kenar)",
-             WIDE_ROUTE_COLOR: "rota (genis yaricap)"}
+    names = {ROUTE_COLOR: "kisaltilmis rota (normal kenar)",
+             WIDE_ROUTE_COLOR: "kisaltilmis rota (genis yaricap)"}
     traces = []
     for color, (xs, ys, zs) in groups.items():
         if not xs:
@@ -103,49 +116,65 @@ def route_traces(result):
     return traces
 
 
-def main():
-    env = Environment3D(BOUNDS, TALL + SHORT, CLEARANCE)
-    result = plan3d(START, GOAL, env, RHO, GAMMA_MAX,
-                    max_iterations=MAX_ITERATIONS, goal_bias=GOAL_BIAS,
-                    max_edge_length=MAX_EDGE_LENGTH,
-                    refine_steps=REFINE_STEPS, rng=random.Random(SEED))
+def build(scene, output):
+    env = make_env(scene)
+    result = plan_scene(scene, env, SEED)
+    cut = cut_of(env, result)
 
-    data = [cylinder_surface(c, TALL_COLOR if c.z_max > 40 else SHORT_COLOR)
+    data = [cylinder_surface(c, TALL_COLOR if c.z_max > scene.tall_z
+                             else SHORT_COLOR)
             for c in env.obstacles]
     if SHOW_TREE:
         data.append(tree_trace(result))
-    data.extend(route_traces(result))
+    if result.found:
+        data.append(before_trace(result.edges))
+    data.extend(route_traces(cut.edges))
     data.append(go.Scatter3d(
-        x=[START[0], GOAL[0]], y=[START[1], GOAL[1]], z=[START[2], GOAL[2]],
+        x=[scene.start[0], scene.goal[0]],
+        y=[scene.start[1], scene.goal[1]],
+        z=[scene.start[2], scene.goal[2]],
         mode="markers+text", text=["baslangic", "hedef"],
         textposition="top center",
         marker=dict(size=6, color=["royalblue", "seagreen"]),
         name="uc noktalar"))
 
     x_min, y_min, z_min, x_max, y_max, z_max = env.bounds
-    cost = f"{result.cost:.1f} m" if result.found else "-"
+    before = f"{result.cost:.1f}" if result.found else "-"
+    after = f"{cut.cost:.1f}" if result.found else "-"
+    gain = (cut.cost - result.cost) / result.cost * 100 if result.found else 0.0
+
     fig = go.Figure(data=data)
     fig.update_layout(
-        title=(f"3B Dubins RRT*   rho={RHO} m, gamma_max="
+        title=(f"3B Dubins RRT* - {scene.name}   rho={RHO} m, gamma_max="
                f"{math.degrees(GAMMA_MAX):.0f} derece, refine={REFINE_STEPS}"
-               f"   dugum={len(result.tree)}, uzunluk={cost}"),
+               f"   dugum={len(result.tree)}"
+               f"   kisaltma {before} -> {after} m ({gain:+.1f}%)"),
         scene=dict(
             xaxis=dict(title="x (dogu, m)", range=[x_min, x_max]),
             yaxis=dict(title="y (kuzey, m)", range=[y_min, y_max]),
             zaxis=dict(title="z (irtifa, m)", range=[z_min, z_max]),
-            # gercek oranlar: harita 100 x 100 x 80
+            # gercek oranlar korunuyor
             aspectmode="manual",
-            aspectratio=dict(x=1.0, y=1.0,
+            aspectratio=dict(x=1.0, y=(y_max - y_min) / (x_max - x_min),
                              z=(z_max - z_min) / (x_max - x_min)),
         ),
         margin=dict(l=0, r=0, t=60, b=0),
     )
 
     # include_plotlyjs=True: dosya kendi kendine yetiyor, internet gerekmiyor
-    fig.write_html(OUTPUT, include_plotlyjs=True)
-    print(f"bulundu={result.found}, dugum={len(result.tree)}, "
-          f"kenar={len(result.edges)}, uzunluk={cost}")
-    print(f"kaydedildi: {OUTPUT}  (tarayicida ac)")
+    fig.write_html(output, include_plotlyjs=True)
+    print(f"[{scene.name}] bulundu={result.found}, dugum={len(result.tree)}, "
+          f"kenar {len(result.edges)} -> {len(cut.edges)}, "
+          f"uzunluk {before} -> {after} m ({gain:+.1f}%)")
+    print(f"kaydedildi: {output}  (tarayicida ac)")
+
+
+def main():
+    name = sys.argv[1] if len(sys.argv) > 1 else SCENE
+    if name not in SCENES:
+        raise SystemExit(f"bilinmeyen harita: {name}; "
+                         f"secenekler: {', '.join(SCENES)}")
+    build(SCENES[name], f"results/rrt3d_view_{name}.html")
 
 
 if __name__ == "__main__":

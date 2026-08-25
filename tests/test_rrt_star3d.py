@@ -11,7 +11,7 @@ from src.environment3d import Cylinder, Environment3D
 from src.rrt_star3d import (Node3, RRTResult3, _extract_path, _nearest,
                             _choose_parent, _neighbour_radius, _neighbours,
                             _propagate_cost, _rewire, _sample, _steer,
-                            _try_connect, plan3d)
+                            _try_connect, plan3d, shortcut)
 
 BOUNDS = (0.0, 0.0, 0.0, 100.0, 100.0, 80.0)
 RHO = 5.0
@@ -656,4 +656,132 @@ class TestPlan3DSteering:
     def test_steering_grows_more_nodes(self):
         """Kisa kenarlar daha az reddedilir, ayni butcede agac buyur."""
         assert len(self._run(35.0).tree) >= len(self._run(None).tree)
+
+
+
+# --- Rota kisaltma (shortcut) ---
+
+PILLAR_ENV = Environment3D(BOUNDS, (Cylinder(50.0, 50.0, 15.0, 0.0, 80.0),), 1.0)
+
+# Kuzeye kacip geri donen apacik bir dolambac; dogrudan bag 80 m duz cizgi.
+DETOUR_POSES = [(10.0, 50.0, 40.0, 0.0),
+                (50.0, 90.0, 40.0, 0.0),
+                (90.0, 50.0, 40.0, 0.0)]
+
+# Dogrudan bag daha KISA (60.8 < 88.0) ama sutunun icinden geciyor.
+PILLAR_POSES = [(20.0, 50.0, 40.0, -math.pi / 4),
+                (50.0, 20.0, 40.0, math.pi / 4),
+                (80.0, 50.0, 40.0, math.pi / 4)]
+
+# Sutunun guneyinden dolasan 4 pozluk rota. Bas-son bagi engelli oldugu icin
+# tek kenara cokemez; ara kestirmeler yine de kazanc verir.
+AROUND_POSES = [(15.0, 50.0, 40.0, -math.pi / 4),
+                (40.0, 22.0, 40.0, 0.0),
+                (62.0, 22.0, 40.0, math.pi / 4),
+                (85.0, 50.0, 40.0, math.pi / 4)]
+
+# Aramayla bulundu: A->C dogrudan bagi helis turu atmak zorunda kaldigi icin
+# A->B->C toplamindan 29.5 m UZUN. Carpisma yok, yine de kestirme gecersiz.
+LONGER_POSES = [(18.049, 27.6453, 3.8886, 1.8069),
+                (70.2343, 79.198, 35.7791, 3.6268),
+                (28.8598, 32.4463, 60.8594, 4.3809)]
+
+
+def _route(poses, env=FREE_ENV):
+    """Poz dizisinden kenar listesi; her kenarin serbest oldugu dogrulanir."""
+    edges = [airplane_path(a, b, RHO, GAMMA_MAX)
+             for a, b in zip(poses, poses[1:])]
+    for edge in edges:
+        assert env.is_path_free(edge.sample(STEP)), "test rotasi zaten engelli"
+    return edges
+
+
+def _total(edges):
+    return sum(edge.length for edge in edges)
+
+
+class TestShortcut:
+    def test_empty_route_stays_empty(self):
+        assert shortcut([], FREE_ENV, RHO, GAMMA_MAX, STEP) == []
+
+    def test_single_edge_is_unchanged(self):
+        edges = _route(DETOUR_POSES[:2])
+        out = shortcut(edges, FREE_ENV, RHO, GAMMA_MAX, STEP)
+        assert len(out) == 1
+        assert math.isclose(_total(out), _total(edges))
+
+    def test_collapses_an_obvious_detour(self):
+        edges = _route(DETOUR_POSES)
+        out = shortcut(edges, FREE_ENV, RHO, GAMMA_MAX, STEP)
+        assert len(out) == 1
+        assert math.isclose(_total(out), 80.0, abs_tol=1e-6)
+
+    def test_blocked_shortcut_is_rejected(self):
+        edges = _route(PILLAR_POSES, PILLAR_ENV)
+        out = shortcut(edges, PILLAR_ENV, RHO, GAMMA_MAX, STEP)
+        assert len(out) == 2
+        assert math.isclose(_total(out), _total(edges))
+
+    def test_longer_direct_connection_is_rejected(self):
+        """Carpisma yok ama kestirme daha uzun; uzunluk kiyasi sart."""
+        edges = _route(LONGER_POSES)
+        out = shortcut(edges, FREE_ENV, RHO, GAMMA_MAX, STEP)
+        assert _total(out) <= _total(edges) + 1e-9
+
+    def test_shortens_without_collapsing_to_one_edge(self):
+        edges = _route(AROUND_POSES, PILLAR_ENV)
+        out = shortcut(edges, PILLAR_ENV, RHO, GAMMA_MAX, STEP)
+        assert len(out) == 2
+        assert _total(out) < _total(edges) - 1.0
+
+    def test_result_is_continuous(self):
+        out = shortcut(_route(AROUND_POSES, PILLAR_ENV), PILLAR_ENV, RHO,
+                       GAMMA_MAX, STEP)
+        for first, second in zip(out, out[1:]):
+            assert_pose3_close(first.end_pose(), second.start)
+
+    def test_keeps_start_and_end_pose(self):
+        edges = _route(AROUND_POSES, PILLAR_ENV)
+        out = shortcut(edges, PILLAR_ENV, RHO, GAMMA_MAX, STEP)
+        assert_pose3_close(out[0].start, edges[0].start)
+        assert_pose3_close(out[-1].end_pose(), edges[-1].end_pose())
+
+    def test_result_is_collision_free(self):
+        out = shortcut(_route(AROUND_POSES, PILLAR_ENV), PILLAR_ENV, RHO,
+                       GAMMA_MAX, STEP)
+        for edge in out:
+            assert PILLAR_ENV.is_path_free(edge.sample(0.2)) is True
+
+    def test_does_not_mutate_input(self):
+        edges = _route(DETOUR_POSES)
+        before = list(edges)
+        shortcut(edges, FREE_ENV, RHO, GAMMA_MAX, STEP)
+        assert edges == before
+
+    def test_second_pass_finds_nothing_more(self):
+        once = shortcut(_route(AROUND_POSES, PILLAR_ENV), PILLAR_ENV, RHO,
+                        GAMMA_MAX, STEP)
+        twice = shortcut(once, PILLAR_ENV, RHO, GAMMA_MAX, STEP)
+        assert math.isclose(_total(twice), _total(once))
+
+    @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+    def test_random_routes_keep_every_invariant(self, seed):
+        rng = random.Random(seed)
+        poses = [(rng.uniform(20, 80), rng.uniform(20, 80),
+                  rng.uniform(20, 60), rng.uniform(0, 2 * math.pi))
+                 for _ in range(5)]
+        edges = _route(poses)
+        out = shortcut(edges, FREE_ENV, RHO, GAMMA_MAX, STEP)
+        assert _total(out) <= _total(edges) + 1e-9
+        assert_pose3_close(out[0].start, edges[0].start)
+        assert_pose3_close(out[-1].end_pose(), edges[-1].end_pose())
+        for first, second in zip(out, out[1:]):
+            assert_pose3_close(first.end_pose(), second.start)
+
+    def test_real_route_stays_valid(self):
+        edges = _short_result(1, 120).edges
+        out = shortcut(edges, SHORT_ENV, RHO, GAMMA_MAX, STEP)
+        assert _total(out) <= _total(edges) + 1e-9
+        for edge in out:
+            assert SHORT_ENV.is_path_free(edge.sample(0.2)) is True
 
