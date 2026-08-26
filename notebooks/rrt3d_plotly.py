@@ -18,8 +18,9 @@ import sys
 
 import plotly.graph_objects as go
 
-from notebooks.rrt3d_demo import (GAMMA_MAX, REFINE_STEPS, RHO, SCENE, SCENES,
-                                  SEED, cut_of, make_env, plan_scene)
+from notebooks.rrt3d_demo import (REFINE_STEPS, SCENE, SCENES, SEED, cut_of,
+                                  make_env, plan_scene, scene_gamma_max,
+                                  scene_rho)
 
 TALL_COLOR = "dimgray"
 SHORT_COLOR = "goldenrod"
@@ -89,11 +90,23 @@ def before_trace(edges):
                         name="kisaltma oncesi", hoverinfo="skip")
 
 
-def route_traces(edges):
+def terrain_surface(terrain):
+    """Arazi yuzeyi; postlar dogrudan Surface izine veriliyor."""
+    xs = [c * terrain.spacing_x for c in range(terrain.cols)]
+    ys = [r * terrain.spacing_y for r in range(terrain.rows)]
+    zs = [[terrain.at(c, r) for c in range(terrain.cols)]
+          for r in range(terrain.rows)]
+    return go.Surface(x=xs, y=ys, z=zs, colorscale="earth", showscale=False,
+                      opacity=1.0, name="arazi",
+                      hovertemplate="x %{x:.0f}<br>y %{y:.0f}"
+                                    "<br>kot %{z:.0f} m<extra></extra>")
+
+
+def route_traces(edges, rho):
     """Rotayi iki ize ayirir: normal kenarlar ve genis yaricapli (refine)."""
     groups = {ROUTE_COLOR: ([], [], []), WIDE_ROUTE_COLOR: ([], [], [])}
     for edge in edges:
-        wide = edge.horizontal.rho > RHO + 1e-9
+        wide = edge.horizontal.rho > rho + 1e-9
         xs, ys, zs = groups[WIDE_ROUTE_COLOR if wide else ROUTE_COLOR]
         for p in edge.sample(ROUTE_STEP):
             xs.append(p[0])
@@ -119,16 +132,18 @@ def route_traces(edges):
 def build(scene, output):
     env = make_env(scene)
     result = plan_scene(scene, env, SEED)
-    cut = cut_of(env, result)
+    cut = cut_of(scene, env, result)
 
     data = [cylinder_surface(c, TALL_COLOR if c.z_max > scene.tall_z
                              else SHORT_COLOR)
             for c in env.obstacles]
+    if scene.terrain is not None:
+        data.insert(0, terrain_surface(scene.terrain))
     if SHOW_TREE:
         data.append(tree_trace(result))
     if result.found:
         data.append(before_trace(result.edges))
-    data.extend(route_traces(cut.edges))
+    data.extend(route_traces(cut.edges, scene_rho(scene)))
     data.append(go.Scatter3d(
         x=[scene.start[0], scene.goal[0]],
         y=[scene.start[1], scene.goal[1]],
@@ -145,8 +160,10 @@ def build(scene, output):
 
     fig = go.Figure(data=data)
     fig.update_layout(
-        title=(f"3B Dubins RRT* - {scene.name}   rho={RHO} m, gamma_max="
-               f"{math.degrees(GAMMA_MAX):.0f} derece, refine={REFINE_STEPS}"
+        title=(f"3B Dubins RRT* - {scene.name}   "
+               f"rho={scene_rho(scene):.0f} m, gamma_max="
+               f"{math.degrees(scene_gamma_max(scene)):.0f} derece, "
+               f"refine={REFINE_STEPS}"
                f"   dugum={len(result.tree)}"
                f"   kisaltma {before} -> {after} m ({gain:+.1f}%)"),
         scene=dict(

@@ -1,11 +1,13 @@
 """src/environment3d.py icin testler."""
 
+import array
 import math
 import random
 
 import pytest
 
 from src.environment3d import Cylinder, Environment3D
+from src.terrain import Terrain
 
 BOUNDS = (0.0, 0.0, 0.0, 100.0, 100.0, 80.0)
 CLEARANCE = 2.0
@@ -224,3 +226,113 @@ class TestRandomFreePose:
         env = Environment3D(BOUNDS, (blocker,), CLEARANCE)
         with pytest.raises(RuntimeError):
             env.random_free_pose(random.Random(5), max_attempts=20)
+
+
+# --- Arazi zemini ---
+
+# 3x3 post, 50 m aralik -> 100x100 m, sinirlarla ayni ayak izi.
+# Ortada 200 m'lik tek tepe; kenarlar deniz seviyesi.
+#
+#   y=100 |    0     0     0
+#   y=50  |    0   200     0
+#   y=0   |    0     0     0
+#           x=0   x=50  x=100
+HILL = Terrain(array.array("h", [0, 0, 0, 0, 200, 0, 0, 0, 0]),
+               cols=3, rows=3, spacing_x=50.0, spacing_y=50.0)
+
+TALL_BOUNDS = (0.0, 0.0, 0.0, 100.0, 100.0, 400.0)
+GROUND_CLEARANCE = 10.0
+HILL_ENV = Environment3D(TALL_BOUNDS, (), GROUND_CLEARANCE, HILL)
+
+
+def _flat_terrain(spacing, level=0, cols=11, rows=11):
+    return Terrain(array.array("h", [level] * (cols * rows)),
+                   cols, rows, spacing, spacing)
+
+
+class TestTerrainIsFree:
+    def test_no_terrain_keeps_old_behaviour(self):
+        """terrain None iken zemin diye bir sey yok, yer seviyesi serbest."""
+        env = Environment3D(TALL_BOUNDS, (), 0.0)
+        assert env.is_free((50.0, 50.0, 0.0)) is True
+
+    @pytest.mark.parametrize("z, expected", [
+        (100.0, False),     # tepenin icinde
+        (205.0, False),     # tepenin ustunde ama emniyet payinda
+        (210.0, True),      # tam payin sinirinda
+        (215.0, True),
+    ])
+    def test_hill_top_column(self, z, expected):
+        assert HILL_ENV.is_free((50.0, 50.0, z)) is expected
+
+    @pytest.mark.parametrize("z, expected", [
+        (5.0, False),
+        (10.0, True),
+        (15.0, True),
+    ])
+    def test_sea_level_corner(self, z, expected):
+        assert HILL_ENV.is_free((0.0, 0.0, z)) is expected
+
+    @pytest.mark.parametrize("z, expected", [(105.0, False), (115.0, True)])
+    def test_interpolated_slope(self, z, expected):
+        """(25, 50)'de arazi 100 m; ara deger de emniyet payina giriyor."""
+        assert HILL_ENV.is_free((25.0, 50.0, z)) is expected
+
+    def test_cylinder_still_applies_above_terrain(self):
+        tower = Cylinder(80.0, 20.0, 10.0, 0.0, 400.0)
+        env = Environment3D(TALL_BOUNDS, (tower,), GROUND_CLEARANCE, HILL)
+        assert env.is_free((80.0, 20.0, 300.0)) is False
+        assert env.is_free((20.0, 20.0, 300.0)) is True
+
+    def test_bounds_still_apply(self):
+        assert HILL_ENV.is_free((50.0, 50.0, 500.0)) is False
+
+    def test_path_over_the_hill_is_blocked(self):
+        """z = 150'de duz gecis tepeye (200 m) carpiyor."""
+        line = [(x, 50.0, 150.0) for x in range(0, 101, 5)]
+        assert HILL_ENV.is_path_free(line) is False
+
+    def test_path_high_enough_is_free(self):
+        line = [(float(x), 50.0, 250.0) for x in range(0, 101, 5)]
+        assert HILL_ENV.is_path_free(line) is True
+
+
+class TestTerrainSuggestedStep:
+    def test_fine_terrain_tightens_the_step(self):
+        """Post araligi 10 m -> adim 5 m'yi asmamali."""
+        env = Environment3D(TALL_BOUNDS, (), 0.0, _flat_terrain(10.0))
+        assert env.suggested_step() == pytest.approx(5.0)
+
+    def test_coarse_terrain_does_not_loosen_the_step(self):
+        """Post araligi 400 m; arazi kisiti gevsek, eski deger kalmali."""
+        env = Environment3D(TALL_BOUNDS, (), 0.0, _flat_terrain(400.0))
+        without = Environment3D(TALL_BOUNDS, (), 0.0).suggested_step()
+        assert env.suggested_step() == pytest.approx(without)
+
+    def test_obstacle_and_terrain_take_the_smaller(self):
+        small = Cylinder(50.0, 50.0, 4.0, 0.0, 40.0)
+        env = Environment3D(TALL_BOUNDS, (small,), 0.0, _flat_terrain(400.0))
+        assert env.suggested_step() == pytest.approx(2.0)
+
+    def test_no_terrain_is_unchanged(self):
+        env = Environment3D(TALL_BOUNDS, (), 0.0)
+        assert env.suggested_step() == pytest.approx(10.0)
+
+
+class TestTerrainRandomFreePose:
+    def test_poses_are_above_the_terrain(self):
+        rng = random.Random(1)
+        for _ in range(200):
+            pose = HILL_ENV.random_free_pose(rng)
+            assert HILL_ENV.is_free(pose) is True
+
+    def test_returns_four_element_pose(self):
+        pose = HILL_ENV.random_free_pose(random.Random(2))
+        assert len(pose) == 4
+        assert 0.0 <= pose[3] < 2 * math.pi
+
+    def test_terrain_above_the_ceiling_leaves_nothing_free(self):
+        buried = Environment3D(TALL_BOUNDS, (), GROUND_CLEARANCE,
+                               _flat_terrain(50.0, level=500))
+        with pytest.raises(RuntimeError):
+            buried.random_free_pose(random.Random(3), max_attempts=50)

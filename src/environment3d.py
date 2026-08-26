@@ -7,6 +7,7 @@ import math
 import random
 from collections.abc import Iterable
 from dataclasses import dataclass
+from src.terrain import Terrain
 
 Point3 = tuple[float, float, float]
 Pose3 = tuple[float, float, float, float]
@@ -42,11 +43,17 @@ class Cylinder:
 
 @dataclass(frozen=True)
 class Environment3D:
-    """Dikdortgen prizma sinirlar, silindir engeller, ortak emniyet payi."""
+    """Dikdortgen prizma sinirlar, silindir engeller, arazi zemini.
+
+    Arazi opsiyonel; None iken davranis eski haliyle ayni. Arazinin yerel
+    koordinatlari ortaminkiyle ayni, kaydirma yok - yani terrain haritanin
+    ayak izini kapsamali. Kapsamazsa elevation_at kenar degerini uzatir.
+    """
 
     bounds: Bounds3
     obstacles: tuple[Cylinder, ...]
     clearance: float
+    terrain: Terrain | None = None
 
     def is_inside_bounds(self, point: Point3 | Pose3) -> bool:
         """Nokta harita hacminin icinde mi; tavan ve taban dahil."""
@@ -56,11 +63,21 @@ class Environment3D:
                 and z_min <= point[2] <= z_max)
 
     def is_free(self, point: Point3 | Pose3) -> bool:
-        """Sinir icinde ve hicbir engelin emniyet payinda degil mi."""
+        """Sinir icinde, engellerin payinda degil ve arazinin ustunde mi.
+
+        Arazi kontrolu emniyet payini zeminden olcuyor: tepe 200 m ve
+        clearance 10 ise serbest taban 210 m. Sinir serbest sayiliyor.
+        """
         if not self.is_inside_bounds(point):
             return False
-        return not any(obstacle.contains(point, self.clearance)
-                       for obstacle in self.obstacles)
+        if any(obstacle.contains(point, self.clearance)
+               for obstacle in self.obstacles):
+            return False
+        if self.terrain is not None:
+            ground = self.terrain.elevation_at(point[0], point[1])
+            if point[2] < ground + self.clearance:
+                return False
+        return True
 
     def is_path_free(self, points: Iterable[Point3 | Pose3]) -> bool:
         """Nokta listesinin tamami serbest mi. Bos liste serbest sayilir."""
@@ -74,15 +91,27 @@ class Environment3D:
         Yukseklik de sayiliyor cunku alcak ve genis bir engel yalnizca
         yaricapa bakan bir adimla dikeyde atlanabilir.
 
+        Arazi varsa post araliginin yarisi tavan oluyor: 90 m araliktaki
+        postlarda 30 m'lik bir adim iki ornek arasinda kalan sirti tamamen
+        atlayabilir ve carpisma gorunmez.
+
         Sezgisel bir kural; ayriklastirma hatasini tamamen kapatmiyor,
         emniyet payi onu yutuyor.
         """
         x_min, y_min, z_min, x_max, y_max, z_max = self.bounds
         if not self.obstacles:
-            return min(x_max - x_min, y_max - y_min, z_max - z_min) / 10
+            step = min(x_max - x_min, y_max - y_min, z_max - z_min) / 10
+            return self._cap_by_terrain(step)
 
         half_sizes = [min(obstacle.radius,(obstacle.z_max - obstacle.z_min) / 2) + self.clearance for obstacle in self.obstacles]
-        return min(half_sizes) / 2
+        return self._cap_by_terrain(min(half_sizes) / 2)
+
+    def _cap_by_terrain(self, step: float) -> float:
+        """Adimi post araliginin yarisiyla sinirlar; arazi yoksa dokunmaz."""
+        if self.terrain is None:
+            return step
+        spacing = min(self.terrain.spacing_x, self.terrain.spacing_y)
+        return min(step, spacing / 2)
 
     def random_free_pose(self, rng: random.Random,
                          max_attempts: int = 1000) -> Pose3:
