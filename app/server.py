@@ -19,15 +19,19 @@ import posixpath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.mission import (Constraints, agl_profile, build_env, plan_mission,
-                         sample_mission)
+                         sample_leg, sample_mission)
 from src.terrain import load_terrain, synthetic_terrain
 
 HOST, PORT = "127.0.0.1", 8000
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# Arazi penceresi. Buyutmek istersen tek yer burasi; karo 1 derece kare
+# oldugu icin (46.15, 14.35) kosesinden ~40 km'ye kadar yer var. Ust sinir
+# tarayici: 20 km karede 67 bin post ve ~335 KB JSON, Plotly rahat cizyor;
+# 30 km'de 152 bin posta cikiyor ve yuzey agirlasiyor.
 TERRAIN_FILE = "data/N46E014.hgl"
-TERRAIN_LAT, TERRAIN_LON = 46.24, 14.5
-TERRAIN_WIDTH = TERRAIN_HEIGHT = 10000.0
+TERRAIN_LAT, TERRAIN_LON = 46.15, 14.35
+TERRAIN_WIDTH = TERRAIN_HEIGHT = 20000.0
 
 CEILING_ABOVE_PEAK = 400.0     # harita tavani: en yuksek tepe + bu kadar
 FRAME_SECONDS = 0.5            # animasyon karesi; ornek araligi hiz * bu
@@ -101,8 +105,23 @@ def plan_payload(body):
                 f"{ground + constraints.clearance:.0f} m")
 
     mission = plan_mission(waypoints, env, constraints)
-    poses = sample_mission(mission, constraints.speed * FRAME_SECONDS)
+    step = constraints.speed * FRAME_SECONDS
+
+    # Bacaklar ayri ayri veriliyor: arayuz planlanamayani kesikli cizip
+    # listede isaretleyebilsin. Animasyon dizisi bunlarin birlesimi.
+    legs = []
+    for leg in mission.legs:
+        poses = sample_leg(leg, step) if leg.found else []
+        legs.append({
+            "found": leg.found,
+            "cost": leg.cost if leg.found else None,
+            "path": [_round_pose(pose) for pose in poses],
+        })
+
+    poses = sample_mission(mission, step)
     agls = agl_profile(poses, TERRAIN)
+    failed = [index + 1 for index, leg in enumerate(mission.legs)
+              if not leg.found]
 
     return {
         "ok": mission.found,
@@ -110,19 +129,21 @@ def plan_payload(body):
         "cost": mission.cost if mission.found else None,
         "duration": mission.duration if mission.found else None,
         "frame_seconds": FRAME_SECONDS,
-        "legs": [{"found": leg.found,
-                  "cost": leg.cost if leg.found else None}
-                 for leg in mission.legs],
-        # yaw Dubins boyunca birikiyor ve 2*pi'yi asabiliyor; API'de
-        # [0, 2*pi) araliginda veriliyor
-        "path": [[round(p[0], 2), round(p[1], 2), round(p[2], 2),
-                  round(p[3] % (2 * math.pi), 4)] for p in poses],
+        "legs": legs,
+        "path": [_round_pose(pose) for pose in poses],
         "agl": {"min": min(agls), "max": max(agls),
                 "mean": sum(agls) / len(agls)} if agls else None,
         "message": ("" if mission.found else
-                    "bazi bacaklar planlanamadi; irtifayi yukselt, "
-                    "yineleme sayisini artir ya da waypoint'i kaydir"),
+                    f"{', '.join(str(n) for n in failed)}. bacak "
+                    f"planlanamadi; irtifayi yukselt, yineleme sayisini "
+                    f"artir ya da waypoint'i kaydir"),
     }
+
+
+def _round_pose(pose):
+    """Yuk boyutunu kucultur; yaw Dubins boyunca birikip 2*pi'yi asabiliyor."""
+    return [round(pose[0], 2), round(pose[1], 2), round(pose[2], 2),
+            round(pose[3] % (2 * math.pi), 4)]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,6 +174,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
+        # Gelistirme araci: app.js degistikten sonra tarayicinin eski
+        # surumu gostermesi saatlerce yanlis yerde hata aratir.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -182,12 +206,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "message": str(error)}, 400)
 
 
+class Server(ThreadingHTTPServer):
+    # Windows'ta SO_REUSEADDR ikinci bir sunucunun ayni porta baglanmasina
+    # izin veriyor ve istekler sessizce eski surece gidiyor - kod
+    # degistirdikten sonra "neden eski davranis" diye saatler yakan bir
+    # tuzak. Kapatiyoruz ki ikinci baslatma yuksek sesle hata versin.
+    allow_reuse_address = False
+
+
 def main():
     print(f"arazi: {TERRAIN.cols} x {TERRAIN.rows} post, "
           f"{TERRAIN.extent_x:.0f} x {TERRAIN.extent_y:.0f} m, "
-          f"kot {LOW:.0f}-{HIGH:.0f} m")
-    print(f"tarayicida ac: http://{HOST}:{PORT}")
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+          f"kot {LOW:.0f}-{HIGH:.0f} m", flush=True)
+    try:
+        server = Server((HOST, PORT), Handler)
+    except OSError as error:
+        raise SystemExit(
+            f"{PORT} portu mesgul ({error}). Onceki sunucu hala calisiyor "
+            f"olabilir; onu kapatip tekrar dene.") from error
+    print(f"tarayicida ac: http://{HOST}:{PORT}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nkapatiliyor", flush=True)
 
 
 if __name__ == "__main__":

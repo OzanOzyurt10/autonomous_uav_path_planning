@@ -156,22 +156,32 @@ def plan_mission(waypoints, env: Environment3D,
     return Mission(legs, found, cost, duration)
 
 
-def sample_mission(mission: Mission, step: float) -> list[Pose3]:
-    """Gorevi step metre araliklarla pozlara cevirir.
-
-    Hiz sabit oldugu icin esit mesafe esit sure demek; tarayici bu diziyi
-    dogrudan animasyon karesi olarak kullanabiliyor.
-    """
+def sample_leg(leg: Leg, step: float) -> list[Pose3]:
+    """Tek bacagi step metre araliklarla pozlara cevirir."""
     if step <= 0.0:
         raise ValueError(f"step pozitif olmali: {step}")
 
     poses = []
+    for edge in leg.edges:
+        for pose in edge.sample(step):
+            if poses and _same_pose(poses[-1], pose):
+                continue              # kenar sinirlari ust uste biniyor
+            poses.append(pose)
+    return poses
+
+
+def sample_mission(mission: Mission, step: float) -> list[Pose3]:
+    """Gorevin tamamini step metre araliklarla pozlara cevirir.
+
+    Hiz sabit oldugu icin esit mesafe esit sure demek; tarayici bu diziyi
+    dogrudan animasyon karesi olarak kullanabiliyor.
+    """
+    poses = []
     for leg in mission.legs:
-        for edge in leg.edges:
-            for pose in edge.sample(step):
-                if poses and _same_pose(poses[-1], pose):
-                    continue          # kenar sinirlari ust uste biniyor
-                poses.append(pose)
+        for pose in sample_leg(leg, step):
+            if poses and _same_pose(poses[-1], pose):
+                continue              # bacak sinirlari da ust uste biniyor
+            poses.append(pose)
     return poses
 
 
