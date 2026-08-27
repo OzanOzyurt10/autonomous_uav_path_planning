@@ -55,16 +55,49 @@ def _try_connect(env: Environment, from_pose: Pose, to_pose: Pose,
     return None
 
 
+def _euclid(a: Pose, b: Pose) -> float:
+    """Iki poz arasindaki yatay Oklid mesafesi; yaw yok sayilir."""
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _steer(from_pose: Pose, to_pose: Pose, rho: float,
+           max_edge_length: float | None) -> Pose:
+    """OPTIMIZASYON - adimli ilerleme (steering).
+
+    Uzak bir ornege tam yol kurmak cogu zaman carpisma yuzunden reddediliyor
+    ve o yineleme bosa gidiyor. Yol max_edge_length'i asiyorsa hedef ayni
+    yol uzerindeki ara poza kirpiliyor. None ise davranis eskisiyle ayni.
+    """
+    if max_edge_length is None:
+        return to_pose
+
+    path = shortest_path(from_pose, to_pose, rho)
+    if not path.length > max_edge_length:
+        return to_pose
+    return path.interpolate(max_edge_length)
+
+
 def _nearest(nodes: list[Node], target: Pose, rho: float) -> int:
-    """Hedefe en yakin dugumun indeksini doner (dugumu degil)."""
-    min_index = None
-    min_dist = None
-    for i in range(len(nodes)):
-        dist = path_length(nodes[i].pose, target, rho)
-        if min_index is None or dist < min_dist:
-            min_index = i
-            min_dist = dist
-    return min_index
+    """Hedefe en yakin dugumun indeksini doner (dugumu degil).
+
+    Oklid mesafesi Dubins mesafesinin alt siniri oldugu icin dugumler once
+    ucuz hypot ile siralanip, eldeki en iyi Dubins mesafesini asan ilk
+    dugumde donguden cikiliyor. Sonuc budamasiz halle birebir ayni; yalnizca
+    kesin olarak elenebilecek Dubins cozumleri atlaniyor.
+    """
+    dist = [_euclid(node.pose, target) for node in nodes]
+    order = sorted(range(len(dist)), key=lambda i: dist[i])
+
+    best_index = None
+    best_dist = None
+    for i in order:
+        if best_dist is not None and dist[i] >= best_dist:
+            break
+        dub = path_length(nodes[i].pose, target, rho)
+        if best_dist is None or dub < best_dist:
+            best_index = i
+            best_dist = dub
+    return best_index
 
 
 def _sample(env: Environment, goal: Pose, rng: random.Random,
@@ -85,6 +118,15 @@ def _extract_path(nodes: list[Node], index: int,
     edges.reverse()          # zincir yapraktan koke toplandi, gidis sirasina cevir
     edges.append(goal_edge)
     return edges
+
+
+# 2B'de birim yuvarlagin alani pi; gerekce rrt_star3d._auto_radius'ta.
+def _auto_radius(bounds, rho: float) -> tuple[float, float]:
+    """Komsuluk yaricabini harita olceginden turetir; 3B ile ayni gerekce."""
+    x_min, y_min, x_max, y_max = bounds
+    area = (x_max - x_min) * (y_max - y_min)
+    gamma = 2 * (3 / 2) ** 0.5 * (area / math.pi) ** 0.5
+    return gamma, 2 * rho
 
 
 def _neighbour_radius(n: int, gamma: float, cap: float) -> float:
@@ -163,7 +205,9 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
          max_iterations: int = 5000, goal_bias: float = 0.05,
          step: float | None = None, rng: random.Random | None = None,
          stop_on_first_solution: bool = False,
-         radius_gamma: float = 60.0, radius_cap: float = 30.0) -> RRTResult:
+         max_edge_length: float | None = None,
+         radius_gamma: float | None = None,
+         radius_cap: float | None = None) -> RRTResult:
     """start'tan goal'a carpismasiz bir Dubins rotasi arar (RRT*).
 
     Her yinelemede bir poz orneklenir, en yakin dugumden oraya kenar kurulur,
@@ -183,10 +227,18 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
         raise ValueError(f"baslangic pozu engelli veya harita disinda: {start}")
     if not env.is_free(goal):
         raise ValueError(f"hedef pozu engelli veya harita disinda: {goal}")
-    if radius_gamma <= 0.0:
+    if max_edge_length is not None and max_edge_length <= 0.0:
+        raise ValueError(f"max_edge_length pozitif olmali: {max_edge_length}")
+    if radius_gamma is not None and radius_gamma <= 0.0:
         raise ValueError(f"radius_gamma pozitif olmali: {radius_gamma}")
-    if radius_cap <= 0.0:
+    if radius_cap is not None and radius_cap <= 0.0:
         raise ValueError(f"radius_cap pozitif olmali: {radius_cap}")
+
+    auto_gamma, auto_cap = _auto_radius(env.bounds, rho)
+    if radius_gamma is None:
+        radius_gamma = auto_gamma
+    if radius_cap is None:
+        radius_cap = auto_cap
 
     if step is None:
         step = env.suggested_step()
@@ -199,6 +251,7 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
     for iteration in range(1, max_iterations + 1):
         target = _sample(env, goal, rng, goal_bias)
         i = _nearest(nodes, target, rho)
+        target = _steer(nodes[i].pose, target, rho, max_edge_length)
         edge = _try_connect(env, nodes[i].pose, target, rho, step)
         if edge is None:
             continue
@@ -231,3 +284,54 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
     return RRTResult(True, edges, cost, max_iterations, nodes)
 
 
+
+
+def shortcut_with(edges, connect, max_rounds: int = 10):
+    """Rotadaki gereksiz duraklari atarak kisaltir; girdi listesi degismez.
+
+    Ardisik olmayan iki pozu dogrudan baglamayi dener, bag gecerliyse ve
+    aradaki kenarlarin toplamindan kisaysa kabul eder. Kazanc kalmayana ya
+    da max_rounds dolana kadar tekrarlanir.
+
+    connect(a, b) iki poz arasinda gecerli bir kenar dondurmeli, yoksa
+    None. Boyutu bilmiyor: kenarin .start, .length ve .end_pose()'u olmasi
+    yetiyor, o yuzden ayni algoritma 2B ve 3B ile calisiyor.
+
+    Uzunluk kiyasi SART, carpisma kontrolu yetmez: 3B'de dogrudan bag
+    helis turu atmak zorunda kalip daha UZUN olabiliyor.
+    """
+    if not edges:
+        return []
+
+    edges = list(edges)
+    poses = [edge.start for edge in edges]
+    poses.append(edges[-1].end_pose())
+
+    for _ in range(max_rounds):
+        changed = False
+        i = 0
+        # len(edges) her adimda yeniden okunuyor: kisayol kabul edilince
+        # liste kisaliyor ve eski uzunlukla dolasmak indeks tasirir.
+        while i + 2 <= len(edges):
+            j = len(edges)
+            while j >= i + 2:
+                new_edge = connect(poses[i], poses[j])
+                if (new_edge is not None
+                        and new_edge.length < sum(e.length
+                                                  for e in edges[i:j])):
+                    edges[i:j] = [new_edge]
+                    del poses[i + 1:j]
+                    changed = True
+                    break
+                j -= 1
+            i += 1
+        if not changed:
+            break
+    return edges
+
+
+def shortcut(edges: list[DubinsPath], env: Environment, rho: float,
+             step: float, max_rounds: int = 10) -> list[DubinsPath]:
+    """shortcut_with'in 2B kolayligi; baglantiyi ortamdan kuruyor."""
+    return shortcut_with(
+        edges, lambda a, b: _try_connect(env, a, b, rho, step), max_rounds)

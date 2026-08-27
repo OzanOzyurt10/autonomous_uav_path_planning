@@ -11,12 +11,14 @@ import os
 import random
 import re
 import sys
+import zipfile
 from dataclasses import dataclass
+
+from src.geo import METRES_PER_DEGREE
 
 # SRTM void isareti. Karadaki en alcak nokta -430 m (Lut Golu), bu yuzden
 # -1000'in altindaki her sey veri yoklugu sayiliyor.
 VOID_BELOW = -1000
-METRES_PER_DEGREE = 111320.0
 
 _HGL_MAGIC = b"LXNSRTM"
 _HGL_HEADER = 512
@@ -149,27 +151,30 @@ def _tile_origin(path: str) -> tuple[int, int]:
     return lat, lon
 
 
-def _read_tile(path: str) -> tuple[array.array, int]:
-    """Karoyu okur; (yukseklikler, kenar uzunlugu), satir 0 = KUZEY.
+def _decode_tile(raw: bytes) -> tuple[array.array, int]:
+    """Ham baytlari (yukseklikler, kenar uzunlugu) ikilisine cevirir.
 
     Iki bicim ayni izgarayi tasiyor, farklari baslik ve bayt sirasi:
     .hgt basliksiz ve big-endian, .hgl 512 baytlik LXNSRTM basligiyla
-    little-endian. Bicim baslik imzasindan anlasiliyor.
+    little-endian. Bicim baslik imzasindan anlasiliyor. Satir 0 = KUZEY.
     """
-    with open(path, "rb") as handle:
-        raw = handle.read()
-
     is_hgl = raw[:len(_HGL_MAGIC)] == _HGL_MAGIC
     body = raw[_HGL_HEADER:] if is_hgl else raw
 
     size = math.isqrt(len(body) // 2)
     if size < 2 or size * size * 2 != len(body):
-        raise ValueError(f"kare bir izgara degil: {len(body)} bayt, {path}")
+        raise ValueError(f"kare bir izgara degil: {len(body)} bayt")
 
     heights = array.array("h", body)
     if (not is_hgl) != (sys.byteorder == "big"):
         heights.byteswap()
     return heights, size
+
+
+def _read_tile(path: str) -> tuple[array.array, int]:
+    """Karo dosyasini okuyup cozer."""
+    with open(path, "rb") as handle:
+        return _decode_tile(handle.read())
 
 
 def _fill_voids(heights: array.array, cols: int, rows: int) -> None:
@@ -245,5 +250,163 @@ def load_terrain(path: str, lat: float, lon: float,
 
     _fill_voids(window, cols, rows)
     return Terrain(window, cols, rows, spacing_x, spacing_y)
+
+
+def tile_name(lat: int, lon: int) -> str:
+    """Karo adi: (46, 14) -> N46E014."""
+    return (f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}"
+            f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}")
+
+
+class MissingTiles(ValueError):
+    """Pencere icin gereken bazi karolar kutuphanede yok."""
+
+    def __init__(self, names):
+        self.names = list(names)
+        super().__init__("eksik karo: " + ", ".join(self.names))
+
+
+class TileStore:
+    """Karo kutuphanesi: klasorlerdeki gevsek dosyalar ve zip arsivleri.
+
+    Pencere birden cok karoya yayilabiliyor; karolar kenarlarinda bir post
+    paylasiyor (46N karosunun en ust satiri 47N karosunun en alt satiri),
+    o yuzden birlestirme derece izgarasi uzerinden yapiliyor.
+    """
+
+    SUFFIXES = (".hgt", ".hgl")
+    CACHE_LIMIT = 6                  # her karo ~2.9 MB; hepsini tutamayiz
+
+    def __init__(self, sources):
+        self._index = {}             # (lat, lon) -> (kaynak, uye adi ya da None)
+        self._cache = {}             # (lat, lon) -> (heights, size)
+        self._order = []
+        for source in sources:
+            if os.path.isdir(source):
+                self._scan_directory(source)
+            elif zipfile.is_zipfile(source):
+                self._scan_archive(source)
+
+    def _remember(self, name, source, member):
+        try:
+            lat, lon = _tile_origin(name)
+        except ValueError:
+            return                   # adi karo desenine uymayan dosya
+        self._index.setdefault((lat, lon), (source, member))
+
+    def _scan_directory(self, directory):
+        for name in os.listdir(directory):
+            if name.lower().endswith(self.SUFFIXES):
+                self._remember(name, os.path.join(directory, name), None)
+
+    def _scan_archive(self, path):
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.namelist():
+                if member.lower().endswith(self.SUFFIXES):
+                    self._remember(member, path, member)
+
+    def coverage(self):
+        """Kutuphanedeki karolarin guneybati koseleri, sirali."""
+        return sorted(self._index)
+
+    def _tile(self, lat, lon):
+        key = (lat, lon)
+        if key in self._cache:
+            return self._cache[key]
+        source, member = self._index[key]
+        if member is None:
+            with open(source, "rb") as handle:
+                raw = handle.read()
+        else:
+            with zipfile.ZipFile(source) as archive:
+                raw = archive.read(member)
+        entry = _decode_tile(raw)
+        self._cache[key] = entry
+        self._order.append(key)
+        while len(self._order) > self.CACHE_LIMIT:
+            del self._cache[self._order.pop(0)]
+        return entry
+
+    def window(self, lat: float, lon: float,
+               width_m: float, height_m: float) -> Terrain:
+        """Kutuphaneden bir pencere keser; gerekirse karolari birlestirir."""
+        size = self._probe_size(lat, lon)
+        span = size - 1                       # karo basina aralik sayisi
+        step_deg = 1.0 / span
+
+        spacing_y = step_deg * METRES_PER_DEGREE
+        mid_lat = lat + height_m / 2 / METRES_PER_DEGREE
+        spacing_x = spacing_y * math.cos(math.radians(mid_lat))
+        cols = int(width_m / spacing_x) + 1
+        rows = int(height_m / spacing_y) + 1
+
+        lat_hi = lat + (rows - 1) * step_deg
+        lon_hi = lon + (cols - 1) * step_deg
+        # Ust kenar tam derece sinirindaysa ustteki karoya gerek yok:
+        # o satir alttaki karonun en ust satiri.
+        first_lat, last_lat = _tile_range(lat, lat_hi)
+        first_lon, last_lon = _tile_range(lon, lon_hi)
+
+        missing = [tile_name(la, lo)
+                   for la in range(first_lat, last_lat + 1)
+                   for lo in range(first_lon, last_lon + 1)
+                   if (la, lo) not in self._index]
+        if missing:
+            raise MissingTiles(missing)
+
+        runs = _column_runs(lon, cols, span, first_lon, last_lon)
+        window = array.array("h", [0]) * (cols * rows)
+        for row in range(rows):
+            degrees = lat + row * step_deg
+            tile_lat = min(max(math.floor(degrees + 1e-9), first_lat), last_lat)
+            local_row = round((degrees - tile_lat) * span)
+            for tile_lon, local_col, length, offset in runs:
+                heights, tile_size = self._tile(tile_lat, tile_lon)
+                if tile_size != size:
+                    raise ValueError(
+                        f"karolarin cozunurlugu farkli: "
+                        f"{tile_name(tile_lat, tile_lon)} {tile_size}, "
+                        f"beklenen {size}")
+                source_row = size - 1 - local_row      # dosya kuzeyden
+                start = source_row * size + local_col
+                out = row * cols + offset
+                window[out:out + length] = heights[start:start + length]
+
+        _fill_voids(window, cols, rows)
+        return Terrain(window, cols, rows, spacing_x, spacing_y)
+
+    def _probe_size(self, lat, lon):
+        key = (math.floor(lat), math.floor(lon))
+        if key not in self._index:
+            raise MissingTiles([tile_name(*key)])
+        return self._tile(*key)[1]
+
+
+def _tile_range(low: float, high: float) -> tuple[int, int]:
+    """Bir derece araligini kapsayan karo indeksleri.
+
+    Ust kenar tam derece sinirindaysa ustteki karo istenmiyor; o satir
+    alttaki karonun en ust satiri olarak zaten var.
+    """
+    first = math.floor(low + 1e-9)
+    last = math.ceil(high - 1e-9) - 1
+    return first, max(first, last)
+
+
+def _column_runs(lon, cols, span, first_lon, last_lon):
+    """Cikti sutunlarini karo karo bitisik parcalara boler.
+
+    Satirlar boyunca ayni oldugu icin bir kez hesaplanip tekrar kullaniliyor.
+    """
+    runs = []
+    column = 0
+    while column < cols:
+        degrees = lon + column / span
+        tile_lon = min(max(math.floor(degrees + 1e-9), first_lon), last_lon)
+        local = round((degrees - tile_lon) * span)
+        length = min(cols - column, span + 1 - local)
+        runs.append((tile_lon, local, length, column))
+        column += length
+    return runs
 
 

@@ -5,7 +5,8 @@ import random
 from dataclasses import dataclass
 
 from src.dubins3d import DubinsPath3D, airplane_length, airplane_path
-from src.environment3d import Environment3D
+from src.environment3d import Bounds3, Environment3D
+from src.rrt_star import shortcut_with
 
 Pose3 = tuple[float,float,float,float]
 
@@ -103,6 +104,28 @@ def _extract_path(nodes: list[Node3], index: int,
     return edges
 
 
+# Karaman & Frazzoli RRT* yaricapi: gamma > 2 (1 + 1/d)^(1/d)
+# (mu(X_free) / zeta_d)^(1/d). Serbest hacim yerine harita hacmi aliniyor;
+# serbest hacim ondan kucuk oldugu icin yaricap guvenli tarafta kaliyor.
+_UNIT_BALL_3 = 4 * math.pi / 3
+
+
+def _auto_radius(bounds: Bounds3, rho: float) -> tuple[float, float]:
+    """Komsuluk yaricabini harita olceginden turetir.
+
+    Sabit metre varsayilanlari 100x60 m'lik demo haritasina gore
+    ayarliydi; 20 km'lik haritada yaricap 18 m'ye dusuyor, komsu kumesi
+    bosaliyor ve RRT* fiilen duz RRT'ye donuyor.
+
+    Tavan bilerek kucuk: olculdu ki genis komsulugun ham agaca kazandirdigi
+    %14'u shortcut zaten geri kazaniyor, ustelik 3.4 kat hizli.
+    """
+    x_min, y_min, z_min, x_max, y_max, z_max = bounds
+    volume = (x_max - x_min) * (y_max - y_min) * (z_max - z_min)
+    gamma = 2 * (4 / 3) ** (1 / 3) * (volume / _UNIT_BALL_3) ** (1 / 3)
+    return gamma, 2 * rho
+
+
 def _neighbour_radius(n: int, gamma: float, radius: float) -> float:
     """RRT* komsuluk yaricapi; agac buyudukce kuculur."""
     if n <= 1:
@@ -190,8 +213,8 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
            rng: random.Random | None = None,
            max_edge_length: float | None = None,
            stop_on_first_solution: bool = False,
-           radius_gamma: float = 80.0,
-           radius_cap: float = 30.0,
+           radius_gamma: float | None = None,
+           radius_cap: float | None = None,
            refine_steps: int = 0) -> RRTResult3:
     """start'tan goal'a carpismasiz bir Dubins airplane rotasi arar (3B RRT*).
     """
@@ -209,10 +232,16 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
         raise ValueError(f"baslangic pozu engelli veya harita disinda: {start}")
     if not env.is_free(goal):
         raise ValueError(f"hedef pozu engelli veya harita disinda: {goal}")
-    if radius_gamma <= 0.0:
+    if radius_gamma is not None and radius_gamma <= 0.0:
         raise ValueError(f"radius_gamma pozitif olmali: {radius_gamma}")
-    if radius_cap <= 0.0:
+    if radius_cap is not None and radius_cap <= 0.0:
         raise ValueError(f"radius_cap pozitif olmali: {radius_cap}")
+
+    auto_gamma, auto_cap = _auto_radius(env.bounds, rho)
+    if radius_gamma is None:
+        radius_gamma = auto_gamma
+    if radius_cap is None:
+        radius_cap = auto_cap
     
     if max_edge_length is not None and max_edge_length <= 0.0:
         raise ValueError(f"max_edge_length pozitif olmali: {max_edge_length}")
@@ -272,39 +301,13 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
 def shortcut(edges: list[DubinsPath3D], env: Environment3D, rho: float,
              gamma_max: float, step: float, refine_steps: int = 0,
              max_rounds: int = 10) -> list[DubinsPath3D]:
-    """Rotadaki gereksiz duraklari atarak kisaltir; girdi listesi degismez.
+    """shortcut_with'in 3B kolayligi; baglantiyi ortamdan kuruyor.
 
-    Ardisik olmayan iki pozu dogrudan baglamayi dener, bag carpismasiz ve
-    aradaki kenarlarin toplamindan kisaysa kabul eder. Uzunluk kiyasi sart:
-    3B'de dogrudan bag helis turu atmak zorunda kalip daha uzun olabiliyor.
-    Kazanc kalmayana ya da max_rounds dolana kadar tekrarlanir.
+    Algoritma 2B ile ortak: tek kopya olsun diye rrt_star.shortcut_with'te
+    duruyor ve baglanti islevi disaridan veriliyor.
     """
-    if not edges:
-        return []
-
-    edges = list(edges)
-    poses = [edge.start for edge in edges]
-    poses.append(edges[-1].end_pose())
-
-    for _ in range(max_rounds):
-        changed = False
-        i = 0
-        
-        while i + 2 <= len(edges):
-            j = len(edges)
-            while j >= i + 2:
-                
-                new_edge = _try_connect(env, poses[i], poses[j], rho,gamma_max, step, refine_steps)
-                if (new_edge is not None
-                        and new_edge.length < sum(e.length for e in edges[i:j])):
-                    edges[i:j] = [new_edge]
-                    del poses[i + 1:j]
-                    changed = True
-                    break
-                j -= 1
-            i += 1
-        if not changed:
-            break
-
-    return edges
-
+    return shortcut_with(
+        edges,
+        lambda a, b: _try_connect(env, a, b, rho, gamma_max, step,
+                                  refine_steps),
+        max_rounds)
