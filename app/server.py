@@ -24,6 +24,7 @@ from app.mission import (Constraints, Zone, agl_profile, build_env,
                          plan_mission_2d, sample_leg, sample_mission)
 from src.geo import Frame
 from src.terrain import MissingTiles, TileStore, tile_name
+from src.terrarium import ElevationUnavailable, TerrariumSource
 
 # .geojson standart tabloda yok; olmazsa octet-stream gider ve calisir,
 # ama dogru tipi vermek tarayici tarafinda surpriz birakmiyor.
@@ -57,6 +58,12 @@ DEFAULT_CRUISE = 1000.0        # 2B seyir irtifasi, MSL
 
 STORE = TileStore(TILE_SOURCES)
 
+# Yerel karo yoksa yukseklik verisi internetten cekiliyor ve data/cache
+# altina yaziliyor; ayni bolge ikinci kez planlanirsa ag gerekmiyor.
+# 3B'nin dunyanin her yerinde calisabilmesinin sarti bu.
+TERRARIUM = TerrariumSource()
+DOWNLOAD_SPACING = 90.0        # indirilen arazinin post araligi, metre
+
 
 class Session:
     """Etkin pencere. Tek kullanicilik arac ama sunucu cok is parcacikli;
@@ -74,13 +81,27 @@ class Session:
         self.frame = Frame.for_window(START_LAT, START_LON, START_SIZE)
         self.size = (START_SIZE, START_SIZE)
         self.missing = []
+        self.source = "yok"        # "yerel" | "indirilen" | "yok"
 
     def select(self, lat, lon, width_m, height_m):
+        """Once yerel karolar, sonra indirme, olmazsa arazisiz.
+
+        Yerel dosya her zaman oncelikli: kullanicinin indirdigi veri
+        genelde daha ince ve zaten diskte.
+        """
+        source = "yerel"
         try:
             terrain = STORE.window(lat, lon, width_m, height_m)
             missing = []
         except MissingTiles as error:
-            terrain, missing = None, error.names
+            missing = error.names
+            try:
+                terrain = TERRARIUM.window(lat, lon, width_m, height_m,
+                                           DOWNLOAD_SPACING)
+                source = "indirilen"
+            except (ElevationUnavailable, ValueError) as problem:
+                print(f"  arazi indirilemedi: {problem}", flush=True)
+                terrain, source = None, "yok"
 
         if terrain is None:
             bounds = (0.0, 0.0, NO_TERRAIN_FLOOR,
@@ -96,6 +117,7 @@ class Session:
             self.frame = Frame.for_window(lat, lon, height_m)
             self.size = (width_m, height_m)
             self.missing = missing
+            self.source = source
         return terrain
 
 
@@ -124,10 +146,11 @@ def terrain_payload():
         terrain, bounds, frame = SESSION.terrain, SESSION.bounds, SESSION.frame
         width, height = SESSION.size
         missing = list(SESSION.missing)
+        source = SESSION.source
 
     if terrain is None:
         return {
-            "has_terrain": False, "missing": missing,
+            "has_terrain": False, "missing": missing, "source": source,
             "cols": 0, "rows": 0, "spacing_x": 0.0, "spacing_y": 0.0,
             "stride": 1, "full_cols": 0, "full_rows": 0,
             "extent_x": width, "extent_y": height,
@@ -141,7 +164,7 @@ def terrain_payload():
     rows = list(range(0, terrain.rows, stride))
     low, high = terrain.elevation_range()
     return {
-        "has_terrain": True, "missing": [],
+        "has_terrain": True, "missing": missing, "source": source,
         "cols": len(cols),
         "rows": len(rows),
         # Seyreltilmis izgaranin post araligi da o kadar buyuyor; tarayici
@@ -209,11 +232,12 @@ def plan_payload(body):
     with SESSION.lock:                      # plan boyunca pencere sabit
         bounds, frame = SESSION.bounds, SESSION.frame
         missing = list(SESSION.missing)
+        source = SESSION.source
 
     if mode == "3d" and terrain is None:
         raise ValueError(
-            f"3B mod arazi verisi istiyor, bu bolgede yok "
-            f"(eksik karo: {', '.join(missing)}). 2B modda planlayabilirsin.")
+            "3B mod arazi verisi istiyor. Yerel karo yok ve internetten de "
+            "indirilemedi; baglantiyi kontrol et ya da 2B modda planla.")
 
     zones = _zones_from(body, frame, bounds)
 
@@ -284,6 +308,7 @@ def plan_payload(body):
         "low": bounds[2], "ceiling": bounds[5],
         "has_terrain": terrain is not None,
         "missing": missing,
+        "terrain_source": source,
         "waypoints": [[round(point[0], 2), round(point[1], 2),
                        round(point[2], 1)] for point in waypoints],
         "zones": [{"x": zone.x, "y": zone.y, "radius": zone.radius}

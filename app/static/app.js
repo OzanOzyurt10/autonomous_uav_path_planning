@@ -11,11 +11,14 @@ let frame = null;          // {lat, lon, midLat, lonScale}
 let terrain = null;        // izgara | null
 let extent = null;         // {x, y, low, ceiling}
 let hasTerrain = false;
+let terrainSource = "yok";  // "yerel" | "indirilen" | "yok"
 let frameSeconds = 0.5;
 
 let zones = [];            // {lat, lon, radius} yasak bolgeler
 let mode = "2d";           // "2d" | "3d"
-let placing = "waypoint";  // haritaya tiklayinca ne konacak
+let arming = null;         // null | "waypoint" | "zone"
+let drawing = null;        // {lat, lon, px, py} - bolge cizimi suruyor
+let selected = -1;         // secili waypoint; iki gorunumde de ortak
 
 let view = { lon: 20, lat: 25, zoom: 2 };   // acilista tum dunya
 let basemap = "sat";
@@ -27,8 +30,12 @@ let playStart = 0;
 let startIndex = 0;
 let lastIndex = -1;
 let draggingScene = false;
+let settleTimer = null;    // kamera hareketi bitince ucagi yerine koy
+let lastPlane3d = 0;       // 3B ucak guncellemesi kisitlaniyor
 
 const DEFAULT_ALT = 300;   // yeni waypointin varsayilan irtifasi
+const MIN_ZONE_RADIUS = 150;    // altinda bolge cizmek kazadir
+const QUICK_ZONE_RADIUS = 800;  // surukleme yerine tiklandiysa
 
 // Koyu yuzey uzerinde dogrulanmis palet: OKLCH bandi, kroma tabani, CVD
 // ayrimi ve kontrast olculdu. Basarisiz bacak ucuncu bir seri DEGIL,
@@ -64,6 +71,24 @@ function toGeo(f, x, y) {
   return [f.lat + y / METRES_PER_DEGREE, f.lon + x / f.lonScale];
 }
 
+function toLocal(f, lat, lon) {
+  return [(lon - f.lon) * f.lonScale, (lat - f.lat) * METRES_PER_DEGREE];
+}
+
+// Waypointlerin PLANLAMA anindaki degil GUNCEL yerel karsiliklari. 3B
+// gorunum bunu kullaniyor ki rotayi bozan bir duzenlemede isaretler
+// kaybolmasin, yerlerinde guncellensin.
+function waypointsLocal() {
+  if (!frame) return [];
+  const cruise = Number($("cruise").value);
+  return waypoints.map((w) => {
+    const local = toLocal(frame, w.lat, w.lon);
+    const ground = elevationAt(local[0], local[1]);
+    return [local[0], local[1],
+            mode === "2d" ? cruise : ground + w.alt];
+  });
+}
+
 // --- Web Mercator: piksel ile enlem/boylam arasi ----------------------
 // MapLibre'de dunya genisligi 512 * 2^zoom CSS piksel. Bu matematigi
 // kendimiz yapiyoruz ki Plotly'nin ic nesnelerine bagimli olmayalim.
@@ -88,13 +113,38 @@ function pixelToLonLat(clientX, clientY) {
                    view.zoom);
 }
 
+// Ekrandaki bir pikselin yer karsiligi. Bolge yaricapini surukleyerek
+// olcerken gerekiyor; enlemle degistigi icin her seferinde hesaplaniyor.
+function metresPerPixel(lat) {
+  return 40075016.686 * Math.cos(lat * Math.PI / 180) /
+         (512 * Math.pow(2, view.zoom));
+}
+
+// Cift tiklanan noktayi ekranda ayni yerde tutarak yakinlastirir.
+// Merkezi hesaplarken: ekran kaymasi d = P - C her iki zoom'da da ayni
+// kalmali, yani yeni merkez = P(yeni zoom) - d.
+function zoomAt(lon, lat, nextZoom) {
+  const before = project(lon, lat, view.zoom);
+  const centre = project(view.lon, view.lat, view.zoom);
+  const offset = [before[0] - centre[0], before[1] - centre[1]];
+  const after = project(lon, lat, nextZoom);
+  const moved = unproject(after[0] - offset[0], after[1] - offset[1],
+                          nextZoom);
+  view.lon = moved[0];
+  view.lat = moved[1];
+  view.zoom = nextZoom;
+  Plotly.relayout("map", { "map.center": { lon: view.lon, lat: view.lat },
+                           "map.zoom": view.zoom });
+  updateOverlays();
+}
+
 // Etiketleri yerlestirmek icin ters yon: enlem/boylam -> kutu ici piksel.
-function lonLatToPixel(lon, lat) {
-  const rect = $("map").getBoundingClientRect();
+function lonLatToPixel(lon, lat, rect) {
+  const box = rect || $("map").getBoundingClientRect();
   const centre = project(view.lon, view.lat, view.zoom);
   const point = project(lon, lat, view.zoom);
-  return [point[0] - centre[0] + rect.width / 2,
-          point[1] - centre[1] + rect.height / 2];
+  return [point[0] - centre[0] + box.width / 2,
+          point[1] - centre[1] + box.height / 2];
 }
 
 // --- taban haritalar ---------------------------------------------------
@@ -207,7 +257,7 @@ function renderZones() {
       "<td>" + zone.lon.toFixed(5) + "</td>" +
       '<td><input type="number" step="100" min="50" value="' +
       zone.radius.toFixed(0) + '"></td>' +
-      '<td><button title="sil">&times;</button></td>';
+      '<td class="drop"><button title="sil">&times;</button></td>';
     row.querySelector("input").addEventListener("change", (event) => {
       zone.radius = Math.max(50, Number(event.target.value));
       invalidatePlan();
@@ -221,10 +271,14 @@ function renderZones() {
     body.appendChild(row);
   });
   $("noZone").style.display = zones.length ? "none" : "block";
-  if (mapReady) {
-    const rings = zoneRings();
-    Plotly.restyle("map", { lon: [rings.lon], lat: [rings.lat] }, [MAP_ZONE]);
-  }
+  $("zoneCount").textContent = String(zones.length);
+  refreshZoneRings();
+}
+
+function refreshZoneRings() {
+  if (!mapReady) return;
+  const rings = zoneRings();
+  Plotly.restyle("map", { lon: [rings.lon], lat: [rings.lat] }, [MAP_ZONE]);
 }
 
 // --- harita cizimi -----------------------------------------------------
@@ -255,8 +309,8 @@ async function drawMap() {
            zoom: view.zoom },
     margin: { l: 0, r: 0, t: 0, b: 0 },
     paper_bgcolor: "rgba(0,0,0,0)", showlegend: false
-  }, { responsive: true, displaylogo: false, scrollZoom: true,
-       modeBarButtonsToRemove: ["select2d", "lasso2d", "toImage"] });
+  }, { responsive: true, displayModeBar: false, scrollZoom: true,
+       doubleClick: false });
 
   mapReady = true;
   const readView = (event) => {
@@ -265,13 +319,13 @@ async function drawMap() {
       view.lat = event["map.center"].lat;
     }
     if (event["map.zoom"] !== undefined) view.zoom = event["map.zoom"];
-    updateLabels();
+    updateOverlays();
   };
   $("map").on("plotly_relayout", readView);
   $("map").on("plotly_relayouting", readView);
 
   refreshMapRoute();
-  updateLabels();
+  updateOverlays();
 }
 
 async function setBasemap(kind) {
@@ -290,56 +344,138 @@ async function setBasemap(kind) {
 }
 
 // --- waypoint etiketleri (haritanin ustunde HTML) ----------------------
-function updateLabels() {
-  const box = $("labels");
-  while (box.children.length > waypoints.length) box.lastChild.remove();
-  while (box.children.length < waypoints.length) {
-    const label = document.createElement("div");
-    label.className = "wplabel";
-    attachDrag(label);
-    box.appendChild(label);
+// Haritanin ustundeki butun tutamaklar tek yerden yerlestiriliyor:
+// waypoint rozetleri, yasak bolge merkezleri ve yaricap tutamaklari.
+// Hepsi HTML, cunku MapLibre'de yazi cizen katman font sunucusu ister.
+function place(node, point, rect) {
+  // Gorunur alanin disindakiler gizleniyor; yoksa kenarda yigilip
+  // yanlis yer gosteriyorlar.
+  const outside = point[0] < -60 || point[1] < -60 ||
+                  point[0] > rect.width + 60 || point[1] > rect.height + 60;
+  node.style.display = outside ? "none" : "block";
+  node.style.left = point[0] + "px";
+  node.style.top = point[1] + "px";
+}
+
+function ensureHandles(box, kind, count, attach) {
+  const nodes = box.querySelectorAll("." + kind);
+  for (let i = nodes.length; i > count; i -= 1) nodes[i - 1].remove();
+  for (let i = nodes.length; i < count; i += 1) {
+    const node = document.createElement("div");
+    node.className = kind;
+    attach(node);
+    box.appendChild(node);
   }
+  return box.querySelectorAll("." + kind);
+}
+
+function updateOverlays() {
+  const box = $("labels");
   const rect = $("map").getBoundingClientRect();
+
+  const labels = ensureHandles(box, "wplabel", waypoints.length, (node) => {
+    attachDrag(node, moveWaypoint, false);
+    // Surukleme degil de tiklama ise waypointi seciyor.
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (node.dataset.moved === "1") {   // surukleme, tiklama degil
+        node.dataset.moved = "";
+        return;
+      }
+      select(Number(node.dataset.index));
+    });
+  });
   waypoints.forEach((w, index) => {
-    const label = box.children[index];
-    const point = lonLatToPixel(w.lon, w.lat);
-    label.textContent = String(index + 1);
-    label.dataset.index = String(index);
-    label.classList.toggle("bad", inFailedLeg(index));
-    // Gorunur alanin disina cikanlari gizle; yoksa kutunun kenarinda
-    // yigilip yanlis yer gosteriyorlar.
-    const outside = point[0] < -40 || point[1] < -40 ||
-                    point[0] > rect.width + 40 || point[1] > rect.height + 40;
-    label.style.display = outside ? "none" : "block";
-    label.style.left = point[0] + "px";
-    label.style.top = point[1] + "px";
+    const node = labels[index];
+    node.textContent = String(index + 1);
+    node.dataset.index = String(index);
+    node.classList.toggle("bad", inFailedLeg(index));
+    node.classList.toggle("sel", index === selected);
+    place(node, lonLatToPixel(w.lon, w.lat, rect), rect);
+  });
+
+  const dots = ensureHandles(box, "zdot", zones.length,
+                             (node) => attachDrag(node, moveZone, true));
+  const grips = ensureHandles(box, "zgrip", zones.length,
+                              (node) => attachDrag(node, resizeZone, true));
+  zones.forEach((zone, index) => {
+    dots[index].dataset.index = String(index);
+    dots[index].title = "bolge " + (index + 1) + " - surukleyerek tasi";
+    place(dots[index], lonLatToPixel(zone.lon, zone.lat, rect), rect);
+
+    // Yaricap tutamagi bolgenin dogu kenarinda; oradan surukleyerek
+    // buyutup kucultuluyor.
+    const east = zone.lon + zone.radius /
+                 (METRES_PER_DEGREE * Math.cos(zone.lat * Math.PI / 180));
+    grips[index].dataset.index = String(index);
+    grips[index].title = "yaricap " + zone.radius.toFixed(0) + " m";
+    place(grips[index], lonLatToPixel(east, zone.lat, rect), rect);
   });
 }
 
-// Etiketi surukleyerek waypoint tasima. Haritanin kendi suruklemesini
-// kesmek icin mousedown'da durduruluyor.
-function attachDrag(label) {
-  let dragging = false;
-  label.addEventListener("mousedown", (event) => {
+function moveWaypoint(index, lon, lat) {
+  waypoints[index].lon = lon;
+  waypoints[index].lat = lat;
+}
+
+function moveZone(index, lon, lat) {
+  zones[index].lon = lon;
+  zones[index].lat = lat;
+}
+
+function resizeZone(index, lon, lat) {
+  const zone = zones[index];
+  const centre = lonLatToPixel(zone.lon, zone.lat);
+  const edge = lonLatToPixel(lon, lat);
+  const span = Math.hypot(edge[0] - centre[0], edge[1] - centre[1]);
+  zone.radius = Math.max(MIN_ZONE_RADIUS, span * metresPerPixel(zone.lat));
+}
+
+// Tutamagi surukleyerek tasima. Haritanin kendi suruklemesini kesmek icin
+// mousedown durduruluyor; apply(index, lon, lat) ne degisecegini biliyor.
+let dragging = null;       // {node, apply, zones} - suren surukleme
+let framePending = false;
+
+function attachDrag(node, apply, touchesZones) {
+  node.addEventListener("mousedown", (event) => {
     event.stopPropagation();
     event.preventDefault();
-    dragging = true;
-    label.classList.add("dragging");
+    node.dataset.moved = "";
+    node.classList.add("dragging");
+    dragging = { node: node, apply: apply, zones: Boolean(touchesZones) };
   });
+}
+
+// Fare her pikselde olay uretiyor ama ekran saniyede 60 kez ciziliyor;
+// arada gelen her sey bosa is. Cizimi bir kareye topluyoruz.
+function scheduleRedraw() {
+  if (framePending) return;
+  framePending = true;
+  requestAnimationFrame(() => {
+    framePending = false;
+    updateOverlays();
+    if (dragging && dragging.zones) refreshZoneRings();
+  });
+}
+
+function startDragManager() {
   window.addEventListener("mousemove", (event) => {
     if (!dragging) return;
-    const index = Number(label.dataset.index);
+    dragging.node.dataset.moved = "1";
     const point = pixelToLonLat(event.clientX, event.clientY);
-    waypoints[index].lon = point[0];
-    waypoints[index].lat = point[1];
-    updateLabels();
+    dragging.apply(Number(dragging.node.dataset.index), point[0], point[1]);
+    scheduleRedraw();
   });
+
   window.addEventListener("mouseup", () => {
     if (!dragging) return;
-    dragging = false;
-    label.classList.remove("dragging");
+    const wasZone = dragging.zones;
+    dragging.node.classList.remove("dragging");
+    dragging = null;
+    updateOverlays();
     invalidatePlan();
     renderList();
+    if (wasZone) renderZones();
   });
 }
 
@@ -371,7 +507,7 @@ function refreshMapRoute() {
   Plotly.restyle("map", { lon: [route.lon], lat: [route.lat] }, [MAP_ROUTE]);
   Plotly.restyle("map", { lon: [failed.lon], lat: [failed.lat] },
                  [MAP_FAILED]);
-  showPlane(0);
+  showPlane(0, true);
 }
 
 // --- arazi yardimcilari -----------------------------------------------
@@ -392,13 +528,21 @@ function elevationAt(x, y) {
 }
 
 // --- 3B gorunum --------------------------------------------------------
+const SURFACE_MAX = 110;   // kenar basina en fazla bu kadar post cizilir
+
 function groundTrace() {
   if (terrain) {
+    const step = Math.max(1, Math.ceil(Math.max(terrain.cols, terrain.rows) /
+                                       SURFACE_MAX));
+    const cols = [], rows = [], grid = [];
+    for (let c = 0; c < terrain.cols; c += step) cols.push(c);
+    for (let r = 0; r < terrain.rows; r += step) rows.push(r);
+    rows.forEach((r) => grid.push(cols.map((c) => terrain.heights[r][c])));
     return {
       type: "surface",
-      x: terrain.heights[0].map((_, c) => c * terrain.spacing_x),
-      y: terrain.heights.map((_, r) => r * terrain.spacing_y),
-      z: terrain.heights,
+      x: cols.map((c) => c * terrain.spacing_x),
+      y: rows.map((r) => r * terrain.spacing_y),
+      z: grid,
       colorscale: "Earth", reversescale: true, showscale: false,
       hovertemplate: "x %{x:.0f}<br>y %{y:.0f}<br>kot %{z:.0f} m<extra></extra>"
     };
@@ -454,20 +598,68 @@ function drawView3d() {
   panel.on("plotly_relayouting", () => { draggingScene = true; });
   panel.on("plotly_relayout", () => {
     draggingScene = false;
-    showPlane(Number($("scrub").value));
+    // Tekerlek her tikta relayout uretiyor; hareket bitene kadar bekle.
+    if (settleTimer !== null) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      showPlane(Number($("scrub").value), true);
+    }, 160);
   });
+
+  // 3B'de fareyle duzenleme YOK ve olmayacak: Plotly'de fare olaylari
+  // once kameraya gidiyor, imlec bir piksel kayarsa tiklama donme
+  // sayilip yutuluyor. Denendi, guvenilir calismadi. Duzenleme haritada
+  // ve ok tuslariyla; 3B gorunum sonucu gostermek icin.
   refresh3dTraces();
 }
 
-function refresh3dTraces() {
+let pending3d = null;      // {waypoints, route, selection}
+let timer3d = null;
+
+function schedule3d(kind) {
   if (!show3d || !extent) return;
-  const wpLocal = (plannedWaypoints || []);
+  if (!pending3d) pending3d = {};
+  pending3d[kind] = true;
+  if (timer3d !== null) return;
+  timer3d = setTimeout(() => {
+    const work = pending3d || {};
+    timer3d = null;
+    pending3d = null;
+    if (work.waypoints) refresh3dWaypoints();
+    else if (work.selection) refresh3dSelection();
+    if (work.route) refresh3dRoute();
+  }, 90);
+}
+
+function markerSizes() {
+  return waypoints.map((_, i) => (i === selected ? 10 : 5));
+}
+
+function markerColours() {
+  return waypoints.map((_, i) =>
+    (i === selected ? COLOR.ink : COLOR.waypoint));
+}
+
+// Yalnizca secim degistiginde: konumlar ayni, iki kucuk dizi yetiyor.
+function refresh3dSelection() {
+  if (!show3d || !extent) return;
+  Plotly.restyle("view3d", { "marker.size": [markerSizes()],
+                             "marker.color": [markerColours()] }, [VIEW_WP]);
+}
+
+function refresh3dWaypoints() {
+  if (!show3d || !extent) return;
+  const wpLocal = waypointsLocal();
   Plotly.restyle("view3d", {
     x: [wpLocal.map((w) => w[0])], y: [wpLocal.map((w) => w[1])],
     z: [wpLocal.map((w) => w[2])],
-    text: [wpLocal.map((_, i) => String(i + 1))]
+    text: [wpLocal.map((_, i) => String(i + 1))],
+    "marker.size": [markerSizes()], "marker.color": [markerColours()]
   }, [VIEW_WP]);
+}
 
+function refresh3dRoute() {
+  if (!show3d || !extent) return;
   const route = [[], [], []];
   legs.forEach((leg) => {
     if (!leg.found) return;
@@ -480,7 +672,10 @@ function refresh3dTraces() {
                  [VIEW_ROUTE]);
 }
 
-let plannedWaypoints = null;   // plan anindaki yerel koordinatlar
+function refresh3dTraces() {
+  refresh3dWaypoints();
+  refresh3dRoute();
+}
 
 // --- ucak figuru -------------------------------------------------------
 // Govde yerel koordinatta tanimli: a ileri, b saga, c yukari. Her karede
@@ -584,7 +779,7 @@ function aircraftTrace(index) {
 
 // restyle dizileri IZ BASINA deger sayiyor: dizi degerli bir ozelligi
 // guncellemek icin bir kat daha sarmak gerekiyor - {x: [[1,2]]}.
-function showPlane(index) {
+function showPlane(index, force) {
   const v = planeVertices(index);
   if (mapReady) {
     const lon = [], lat = [];
@@ -597,22 +792,85 @@ function showPlane(index) {
     }
     Plotly.restyle("map", { lon: [lon], lat: [lat] }, [MAP_PLANE]);
   }
-  if (show3d && !draggingScene && extent) {
-    Plotly.restyle("view3d", { x: [v.x], y: [v.y], z: [v.z] }, [VIEW_PLANE]);
-  }
+  if (!show3d || draggingScene || !extent) return;
+  const now = performance.now();
+  if (!force && now - lastPlane3d < 110) return;
+  lastPlane3d = now;
+  Plotly.restyle("view3d", { x: [v.x], y: [v.y], z: [v.z] }, [VIEW_PLANE]);
 }
 
 // --- mod ------------------------------------------------------------
-function setPlacing(kind) {
-  placing = kind;
-  $("map").classList.toggle("placing", kind === "zone");
+// Hicbir sey kazayla eklenmiyor: once ne koyacagini soyluyorsun.
+// Waypoint kolu ACIK KALIYOR (rota birkac noktadan olusur), yasak bolge
+// bir tane cizildikten sonra kendiliginden birakiliyor.
+function setArming(kind) {
+  arming = kind;
+  $("map").classList.toggle("arming", kind !== null);
+
+  $("addWp").classList.toggle("on", kind === "waypoint");
+  $("addWp").textContent = kind === "waypoint" ? "Bitir" : "Ekle";
+  $("empty").classList.toggle("warn", kind === "waypoint");
+  $("empty").textContent = kind === "waypoint"
+    ? "Haritaya tikla. Bitince Bitir ya da Esc."
+    : "Ekle'ye bas, sonra haritaya tikla.";
+  $("empty").style.display = (waypoints.length && kind !== "waypoint")
+    ? "none" : "block";
+
   $("addZone").classList.toggle("on", kind === "zone");
-  $("addZone").textContent = kind === "zone" ? "Haritaya tikla"
-                                             : "Bolge ekle";
+  $("addZone").textContent = kind === "zone" ? "Vazgec" : "Ekle";
+  $("noZone").classList.toggle("warn", kind === "zone");
+  $("noZone").textContent = kind === "zone"
+    ? "Merkeze bas, disariya surukle, birak."
+    : "Ekle'ye bas, haritada merkezden disariya surukle.";
+}
+
+// Secim iki gorunumun ortak dili: haritada rozet halkalaniyor, tabloda
+// satir isaretleniyor, 3B'de isaret buyuyor.
+function select(index) {
+  selected = (index === selected) ? -1 : index;
+  updateOverlays();
+  renderList();
+  schedule3d("selection");   // konumlar degismedi, yalnizca vurgu
+}
+
+// Cizim rehberi: canli halka, merkeze giden olcu cizgisi ve yaricap
+// okumasi. Pergelle olcmek gibi - sayiyi tabloda aramak gerekmiyor.
+function drawGuide(cx, cy, x, y, metres) {
+  const guide = $("guide");
+  if (!guide.firstChild) {
+    guide.innerHTML = '<div class="ring"></div><div class="rule"></div>' +
+                      '<div class="tag"></div>';
+  }
+  const span = Math.hypot(x - cx, y - cy);
+  const ring = guide.children[0];
+  ring.style.left = cx + "px";
+  ring.style.top = cy + "px";
+  ring.style.width = (span * 2) + "px";
+  ring.style.height = (span * 2) + "px";
+
+  const rule = guide.children[1];
+  rule.style.left = cx + "px";
+  rule.style.top = cy + "px";
+  rule.style.width = span + "px";
+  rule.style.transform =
+    "rotate(" + Math.atan2(y - cy, x - cx) + "rad)";
+
+  const tag = guide.children[2];
+  tag.style.left = x + "px";
+  tag.style.top = y + "px";
+  tag.textContent = metres >= 1000
+    ? (metres / 1000).toFixed(2) + " km"
+    : metres.toFixed(0) + " m";
+  guide.classList.add("on");
+}
+
+function hideGuide() {
+  $("guide").classList.remove("on");
 }
 
 function setMode(next) {
   mode = next;
+  setArming(null);
   $("mode2d").classList.toggle("on", next === "2d");
   $("mode3d").classList.toggle("on", next === "3d");
   $("cruiseField").style.display = next === "2d" ? "flex" : "none";
@@ -626,18 +884,19 @@ function addWaypoint(lat, lon) {
   waypoints.push({ lat: lat, lon: lon, alt: DEFAULT_ALT });
   invalidatePlan();
   renderList();
-  updateLabels();
+  updateOverlays();
 }
 
 function invalidatePlan() {
   legs = [];
   path = [];
-  plannedWaypoints = null;
   stopPlayback();
   $("scrub").disabled = true;
   $("play").disabled = true;
   clearStats();
   refreshMapRoute();
+  schedule3d("waypoints");
+  schedule3d("route");
 }
 
 function inFailedLeg(index) {
@@ -650,7 +909,12 @@ function renderList() {
   body.innerHTML = "";
   waypoints.forEach((w, index) => {
     const row = document.createElement("tr");
-    if (inFailedLeg(index)) row.className = "leg-bad";
+    row.className = (inFailedLeg(index) ? "bad " : "") +
+                    (index === selected ? "sel" : "");
+    row.addEventListener("click", (event) => {
+      if (event.target.tagName !== "TD") return;   // giris ve silme haric
+      select(index);
+    });
     row.innerHTML =
       "<td>" + (index + 1) + "</td>" +
       "<td>" + w.lat.toFixed(5) + "</td>" +
@@ -659,7 +923,7 @@ function renderList() {
         ? '<td class="ghost">' + Number($("cruise").value).toFixed(0) + "</td>"
         : '<td><input type="number" step="50" value="' + w.alt.toFixed(0) +
           '"></td>') +
-      '<td><button title="sil">&times;</button></td>';
+      '<td class="drop"><button title="sil">&times;</button></td>';
     const altInput = row.querySelector('input[type="number"]');
     if (altInput) {
       altInput.addEventListener("change", (event) => {
@@ -667,15 +931,19 @@ function renderList() {
         invalidatePlan();
       });
     }
-    row.querySelector("button").addEventListener("click", () => {
+    row.querySelector("button").addEventListener("click", (event) => {
+      event.stopPropagation();
       waypoints.splice(index, 1);
+      if (selected >= waypoints.length) selected = -1;
       invalidatePlan();
       renderList();
-      updateLabels();
+      updateOverlays();
     });
     body.appendChild(row);
   });
-  $("empty").style.display = waypoints.length ? "none" : "block";
+  $("empty").style.display =
+    (waypoints.length && arming !== "waypoint") ? "none" : "block";
+  $("wpCount").textContent = String(waypoints.length);
   $("plan").disabled = waypoints.length < 2;
 }
 
@@ -741,7 +1009,8 @@ async function requestPlan() {
 
   $("plan").disabled = false;
   if (data.rho) {
-    $("rho").textContent = "donus yaricapi " + data.rho.toFixed(0) + " m";
+    $("rho").innerHTML = "donus yaricapi <b>" + data.rho.toFixed(0) +
+                         " m</b>";
   }
 
   if (data.frame) {
@@ -750,14 +1019,14 @@ async function requestPlan() {
                low: data.low, ceiling: data.ceiling };
     terrain = data.terrain || null;
     hasTerrain = Boolean(data.has_terrain);
-    plannedWaypoints = data.waypoints || null;
+    terrainSource = data.terrain_source || "yok";
     applyAltitudeLabels();
   }
 
   legs = data.legs || [];
   path = data.path || [];
   renderList();
-  updateLabels();
+  updateOverlays();
   refreshMapRoute();
   if (show3d) drawView3d();
 
@@ -776,6 +1045,16 @@ async function requestPlan() {
   $("scrub").disabled = false;
   $("play").disabled = false;
   updateClock(0);
+}
+
+// Arazinin nereden geldigi gorunur olmali: indirilen veri 90 m post ve
+// kullanicinin kendi indirdigi karolardan kaba olabilir.
+function sourceNote() {
+  if (terrainSource === "indirilen") {
+    return " Arazi internetten indirildi (90 m post).";
+  }
+  if (terrainSource === "yerel") return " Arazi yerel karodan.";
+  return "";
 }
 
 function fillStats(data) {
@@ -810,7 +1089,8 @@ function fillStats(data) {
               data.agl.min.toFixed(0) + " m. 2B planlama araziden " +
               "kacinmaz - ya seyir irtifasini en az " +
               (Number($("cruise").value) - data.agl.min + clearance)
-                .toFixed(0) + " m yap, ya 3B moda gec.", "bad");
+                .toFixed(0) + " m yap, ya 3B moda gec." + sourceNote(),
+              "bad");
     return;
   }
   const verdict = state === "good" ? "emniyet payinin rahat ustunde"
@@ -818,20 +1098,22 @@ function fillStats(data) {
                 : "emniyet payinin ALTINDA";
   setStatus("ortalama AGL " + data.agl.mean.toFixed(0) + " m, en dusuk " +
             data.agl.min.toFixed(0) + " m - " + clearance + " m " + verdict +
-            ".", state === "bad" ? "bad" : "");
+            "." + sourceNote(), state === "bad" ? "bad" : "");
 }
 
 // Etiketin dogru olmasi emniyet meselesi. 2B'de irtifa tek seyir degeri
 // ve MSL; 3B'de waypoint basina ve arazi zemininden (AGL).
 function applyAltitudeLabels() {
   if (mode === "2d") {
-    $("altHead").textContent = "seyir MSL";
-    $("altUnit").textContent = "yatay rota, tek seyir irtifasi";
+    $("altHead").textContent = "seyir m";
+    $("altUnit").textContent =
+      "2B: yatay rota, tek seyir irtifasi (deniz seviyesinden).";
   } else {
     $("altHead").textContent = "AGL m";
-    $("altUnit").textContent = "waypoint basina, yerden yukseklik";
+    $("altUnit").textContent =
+      "3B: waypoint basina, arazi zemininden yukseklik.";
   }
-  $("aglKey").textContent = hasTerrain ? "en dusuk AGL" : "AGL yok";
+  $("aglKey").textContent = hasTerrain ? "en dusuk agl" : "agl yok";
 }
 
 // --- animasyon ---------------------------------------------------------
@@ -893,17 +1175,25 @@ function togglePlayback() {
 function toggle3d() {
   show3d = !show3d;
   $("panel3d").hidden = !show3d;
-  $("below").classList.toggle("split", show3d);
-  $("toggle3d").textContent = show3d ? "3B gizle" : "3B goster";
+  // 3B haritanin YANINA aciliyor: ust sira iki sahneye bolunuyor.
+  $("stageRow").classList.toggle("with3d", show3d);
+  $("toggle3d").textContent = show3d ? "3B kapat" : "3B panel";
   $("toggle3d").classList.toggle("on", show3d);
+
+  // Harita daraldi ya da genisledi; Plotly yeni boyutu kendiliginden
+  // ogrenmiyor ve tutamaklar eski piksellere gore duruyor.
+  if (mapReady) Plotly.Plots.resize($("map"));
+  updateOverlays();
+
   if (!show3d) return;
   if (!extent) {
     $("hint3d").textContent =
       "Once rotayi planla; 3B gorunum planlanan alani gosteriyor.";
     return;
   }
-  $("hint3d").textContent = hasTerrain ? ""
-    : "Bu bolgede arazi verisi yok; zemin duz cizildi ve irtifa MSL.";
+  $("hint3d").textContent =
+    (hasTerrain ? "" : "Arazi verisi yok; zemin duz cizildi, irtifa MSL. ") +
+    "Surukle dondur, tekerlek yakinlastir. Duzenleme haritada.";
   drawView3d();
 }
 
@@ -912,38 +1202,142 @@ async function start() {
   renderList();
   renderZones();
   clearStats();
-  setPlacing("waypoint");
+  setArming(null);
   setMode("2d");
   await setBasemap("sat");
 
-  // Haritanin bosluguna tiklama: Plotly map alt grafiginde iz uzerinde
-  // olmayan tiklamalar plotly_click uretmiyor, o yuzden DOM olayini
-  // kendi Mercator matematigimizle cozuyoruz.
+  // Plotly map alt grafiginde iz uzerinde olmayan tiklamalar
+  // plotly_click uretmiyor, o yuzden isaret koymayi DOM olaylarindan ve
+  // kendi Mercator matematigimizden cikariyoruz.
   //
   // Surukleme ayirt edilmek zorunda: tarayici haritayi kaydirdiktan sonra
-  // da click uretiyor, yani her pan bir waypoint birakirdi.
+  // da birakma olayi uretiyor, yani her pan bir waypoint birakirdi.
   let pressAt = null;
+
+  const local = (event) => {
+    const rect = $("map").getBoundingClientRect();
+    return [event.clientX - rect.left, event.clientY - rect.top];
+  };
+  const overMap = (event) => {
+    const rect = $("map").getBoundingClientRect();
+    return event.clientX >= rect.left && event.clientX <= rect.right
+        && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  };
+
   $("map").addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
     pressAt = [event.clientX, event.clientY];
+    if (arming !== "zone") return;
+    const point = pixelToLonLat(event.clientX, event.clientY);
+    const here = local(event);
+    drawing = { lon: point[0], lat: point[1], px: here[0], py: here[1] };
+    event.preventDefault();      // cizerken harita kaymasin
+    event.stopPropagation();
   });
-  $("map").addEventListener("click", (event) => {
+
+  // Cift tikla yaklas, Shift ile uzaklas. Isaret koyma kolu acikken
+  // devre disi: orada cift tiklama iki waypoint demek.
+  $("map").addEventListener("dblclick", (event) => {
+    if (arming !== null) return;
+    event.preventDefault();
+    const point = pixelToLonLat(event.clientX, event.clientY);
+    const step = event.shiftKey ? -1 : 1;
+    zoomAt(point[0], point[1],
+           Math.max(1, Math.min(19, view.zoom + step)));
+  });
+
+  $("map").addEventListener("mousemove", (event) => {
+    const point = pixelToLonLat(event.clientX, event.clientY);
+    $("readout").textContent =
+      Math.abs(point[1]).toFixed(5) + (point[1] >= 0 ? " K  " : " G  ") +
+      Math.abs(point[0]).toFixed(5) + (point[0] >= 0 ? " D" : " B") +
+      "   z" + view.zoom.toFixed(1);
+  });
+
+  window.addEventListener("mousemove", (event) => {
+    if (!drawing) return;
+    const here = local(event);
+    const span = Math.hypot(here[0] - drawing.px, here[1] - drawing.py);
+    drawGuide(drawing.px, drawing.py, here[0], here[1],
+              span * metresPerPixel(drawing.lat));
+  });
+
+  window.addEventListener("mouseup", (event) => {
+    if (drawing) {
+      const here = local(event);
+      const span = Math.hypot(here[0] - drawing.px, here[1] - drawing.py);
+      let radius = span * metresPerPixel(drawing.lat);
+      // Surukleme yerine tiklandiysa cezalandirmadan makul bir bolge kur;
+      // kullanici yaricabi tutamaktan ya da tablodan duzeltir.
+      if (radius < MIN_ZONE_RADIUS) radius = QUICK_ZONE_RADIUS;
+      zones.push({ lat: drawing.lat, lon: drawing.lon, radius: radius });
+      drawing = null;
+      pressAt = null;
+      hideGuide();
+      setArming(null);           // bolge tek seferlik
+      invalidatePlan();
+      renderZones();
+      updateOverlays();
+      return;
+    }
     if (!pressAt) return;
     const moved = Math.hypot(event.clientX - pressAt[0],
                              event.clientY - pressAt[1]);
     pressAt = null;
-    if (moved > 4) return;                 // kaydirma, tiklama degil
+    if (moved > 4 || !overMap(event)) return;   // kaydirma, tiklama degil
+    if (arming !== "waypoint") return;          // kazayla isaret konmasin
     const point = pixelToLonLat(event.clientX, event.clientY);
-    if (placing === "zone") {
-      zones.push({ lat: point[1], lon: point[0], radius: 1500 });
-      setPlacing("waypoint");
-      invalidatePlan();
-      renderZones();
-      return;
-    }
-    addWaypoint(point[1], point[0]);
+    addWaypoint(point[1], point[0]);            // kol acik kaliyor
   });
 
-  window.addEventListener("resize", updateLabels);
+  // Vazgecme: cizim yarida kalirsa kilitli kalmasin.
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (drawing || arming !== null) {
+      drawing = null;
+      hideGuide();
+      setArming(null);
+      return;
+    }
+    if (selected >= 0) select(selected);        // secimi kaldir
+  });
+
+  // Secili waypointi ok tuslariyla kaydir, irtifasini +/- ile degistir.
+  // 3B'de zemine tiklamak kamera bir kil donerse yutuluyor; bu yol
+  // her zaman calisiyor ve hassas ayar icin zaten daha iyi.
+  const NUDGE = { ArrowUp: [0, 1], ArrowDown: [0, -1],
+                  ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+  window.addEventListener("keydown", (event) => {
+    if (selected < 0 || document.activeElement.tagName === "INPUT") return;
+
+    if (NUDGE[event.key]) {
+      event.preventDefault();
+      // Adim ekranda sabit kalsin diye zoom'a gore: 6 piksel.
+      const metres = 6 * metresPerPixel(waypoints[selected].lat) *
+                     (event.shiftKey ? 6 : 1);
+      const step = NUDGE[event.key];
+      waypoints[selected].lat += step[1] * metres / METRES_PER_DEGREE;
+      waypoints[selected].lon += step[0] * metres /
+        (METRES_PER_DEGREE *
+         Math.cos(waypoints[selected].lat * Math.PI / 180));
+      invalidatePlan();
+      renderList();
+      updateOverlays();
+      return;
+    }
+
+    if (mode === "3d" && (event.key === "+" || event.key === "-"
+                          || event.key === "=")) {
+      event.preventDefault();
+      const delta = (event.key === "-" ? -1 : 1) * (event.shiftKey ? 100 : 25);
+      waypoints[selected].alt = Math.max(0, waypoints[selected].alt + delta);
+      invalidatePlan();
+      renderList();
+    }
+  });
+
+  startDragManager();
+  window.addEventListener("resize", updateOverlays);
 
   $("layerSat").addEventListener("click", () => setBasemap("sat"));
   $("layerStreet").addEventListener("click", () => setBasemap("street"));
@@ -952,9 +1346,10 @@ async function start() {
   $("toggle3d").addEventListener("click", toggle3d);
   $("mode2d").addEventListener("click", () => setMode("2d"));
   $("mode3d").addEventListener("click", () => setMode("3d"));
-  $("addZone").addEventListener("click", () => {
-    setPlacing(placing === "zone" ? "waypoint" : "zone");
-  });
+  $("addWp").addEventListener("click", () =>
+    setArming(arming === "waypoint" ? null : "waypoint"));
+  $("addZone").addEventListener("click", () =>
+    setArming(arming === "zone" ? null : "zone"));
   $("cruise").addEventListener("change", () => {
     invalidatePlan();
     renderList();
@@ -972,11 +1367,12 @@ async function start() {
   $("clear").addEventListener("click", () => {
     waypoints = [];
     zones = [];
-    setPlacing("waypoint");
+    selected = -1;
+    setArming(null);
     renderZones();
     invalidatePlan();
     renderList();
-    updateLabels();
+    updateOverlays();
     setStatus("Haritaya tiklayarak en az iki waypoint koy.");
   });
 }

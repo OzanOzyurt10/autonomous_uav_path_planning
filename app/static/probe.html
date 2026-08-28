@@ -2,26 +2,29 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<title>Karo saglayici sinamasi</title>
+<title>Kaynak sinamasi</title>
 <style>
   body { margin: 0; background: #0d1016; color: #e6e9ef;
          font: 14px/1.5 system-ui, "Segoe UI", sans-serif; }
   header { padding: 12px 18px; border-bottom: 1px solid #2a3040; }
   h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 12px; letter-spacing: .09em; text-transform: uppercase;
+       color: #8b93a7; margin: 22px 18px 0; }
   p { margin: 0; color: #8b93a7; font-size: 13px; }
-  #ozet { padding: 12px 18px; font-family: ui-monospace, Consolas, monospace;
-          font-size: 13px; background: #12151b;
-          border-bottom: 1px solid #2a3040; white-space: pre-wrap; }
-  .grid { display: grid; gap: 14px; padding: 18px;
-          grid-template-columns: repeat(auto-fill, minmax(256px, 1fr)); }
+  .ozet { margin: 12px 18px 0; padding: 11px 13px; border-radius: 7px;
+          background: #12151b; border: 1px solid #2a3040;
+          font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+          white-space: pre-wrap; }
+  .grid { display: grid; gap: 14px; padding: 14px 18px;
+          grid-template-columns: repeat(auto-fill, minmax(246px, 1fr)); }
   .kart { background: #171b23; border: 1px solid #2a3040; border-radius: 8px;
           overflow: hidden; }
-  .kart img { display: block; width: 100%; height: 256px;
-              object-fit: cover; background: #0f1622; }
+  .kart img, .kart canvas { display: block; width: 100%; height: 220px;
+                            object-fit: cover; background: #0f1622; }
   .kart .ad { padding: 7px 10px 2px; font-size: 13px; font-weight: 600; }
   .kart .tur { padding: 0 10px; font-size: 11px; color: #5b6478; }
   .kart .durum { padding: 4px 10px 9px; font-size: 12px; }
-  .ok { color: #35a87c; } .bad { color: #ef4d5e; } .dim { color: #8b93a7; }
+  .ok { color: #35a87c; } .bad { color: #ef4d5e; } .warn { color: #c98a1e; }
   .kart.ok { border-color: #35a87c; }
   .kart.bad { opacity: .55; }
 </style>
@@ -29,70 +32,61 @@
 <body>
 
 <header>
-  <h1>Hangi harita saglayicisi senin agindan geciyor?</h1>
-  <p>Her kutu tek bir karo indiriyor: Slovenya, zoom 10. Goruntu gelirse
-     o saglayici calisiyor demektir.</p>
+  <h1>Hangi kaynaklar senin agindan geciyor?</h1>
+  <p>Her kutu tek bir karo indiriyor: Slovenya. Goruntu gelirse o kaynak
+     calisiyor demektir.</p>
 </header>
 
-<div id="ozet">deneniyor...</div>
-<div class="grid" id="grid"></div>
+<h2>1. Harita karolari (zaten kullanimda)</h2>
+<div class="ozet" id="ozetHarita">deneniyor...</div>
+<div class="grid" id="harita"></div>
+
+<h2>2. Yukseklik verisi - 3B'nin her yerde calismasi icin</h2>
+<div class="ozet" id="ozetKot">deneniyor...</div>
+<div class="grid" id="kot"></div>
 
 <script>
 "use strict";
 
-// Slovenya, zoom 10. OSM duzeninde x=552 y=363; Esri/WMTS duzeninde
-// satir/sutun sirasi ters oldugu icin adres kaliplari farkli yaziliyor.
+// Slovenya. OSM duzeninde z/x/y, Esri-WMTS duzeninde z/y/x.
 const Z = 10, X = 552, Y = 363;
+// Yukseklik karosu daha yakin: z12. Merkezi 46.10371 N, 14.37012 E.
+const EZ = 12, EX = 2211, EY = 1455;
+// Ayni noktada elimizdeki N46E014.hgl dosyasinin verdigi kot:
+const YEREL_KOT = 744;
 
-const KAYNAKLAR = [
-  { ad: "OpenStreetMap", tur: "sokak haritasi - Google Maps gorunumu",
-    url: "https://tile.openstreetmap.org/" + Z + "/" + X + "/" + Y + ".png" },
-
-  { ad: "Sentinel-2 cloudless (EOX)", tur: "UYDU - bulutsuz, tum dunya",
+const HARITA = [
+  { ad: "Sentinel-2 cloudless (EOX)", tur: "UYDU - simdiki varsayilan",
     url: "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/" +
          "default/g/" + Z + "/" + Y + "/" + X + ".jpg" },
-
-  { ad: "Esri World Imagery", tur: "UYDU - onceki denemede reddetti",
-    url: "https://server.arcgisonline.com/ArcGIS/rest/services/" +
-         "World_Imagery/MapServer/tile/" + Z + "/" + Y + "/" + X },
-
-  { ad: "Esri (services. alt sunucu)", tur: "UYDU - ayni servis, baska host",
-    url: "https://services.arcgisonline.com/ArcGIS/rest/services/" +
-         "World_Imagery/MapServer/tile/" + Z + "/" + Y + "/" + X },
-
-  { ad: "Carto Dark Matter", tur: "sokak haritasi - koyu tema",
-    url: "https://basemaps.cartocdn.com/dark_all/" + Z + "/" + X + "/" +
-         Y + ".png" },
-
-  { ad: "OpenTopoMap", tur: "topografik - kot egrileri, IHA icin iyi",
-    url: "https://tile.opentopomap.org/" + Z + "/" + X + "/" + Y + ".png" },
-
-  { ad: "Wikimedia Maps", tur: "sokak haritasi",
-    url: "https://maps.wikimedia.org/osm-intl/" + Z + "/" + X + "/" +
-         Y + ".png" },
-
-  { ad: "NASA GIBS (Blue Marble)", tur: "UYDU - dusuk zoom siniri",
-    url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/" +
-         "BlueMarble_ShadedRelief_Bathymetry/default/500m/" +
-         Z + "/" + Y + "/" + X + ".jpeg" }
+  { ad: "OpenStreetMap", tur: "sokak haritasi",
+    url: "https://tile.openstreetmap.org/" + Z + "/" + X + "/" + Y + ".png" },
+  { ad: "OpenTopoMap", tur: "topografik",
+    url: "https://tile.opentopomap.org/" + Z + "/" + X + "/" + Y + ".png" }
 ];
 
-const grid = document.getElementById("grid");
-const ozet = document.getElementById("ozet");
-let biten = 0;
-const calisan = [];
+// Terrarium: yukseklik RGB'ye kodlu.  kot = R*256 + G + B/256 - 32768
+const KOT = [
+  { ad: "AWS Terrain Tiles", tur: "Terrarium PNG - anahtarsiz, kuresel",
+    url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/" +
+         EZ + "/" + EX + "/" + EY + ".png", terrarium: true },
+  { ad: "AWS (bucket alt alan adi)", tur: "ayni veri, baska host",
+    url: "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/" +
+         EZ + "/" + EX + "/" + EY + ".png", terrarium: true },
+  { ad: "AWS (bolgesel endpoint)", tur: "ayni veri, us-east-1",
+    url: "https://elevation-tiles-prod.s3.us-east-1.amazonaws.com/terrarium/" +
+         EZ + "/" + EX + "/" + EY + ".png", terrarium: true }
+];
 
-KAYNAKLAR.forEach(function (kaynak) {
+function kartYap(hedef, kaynak, biten, toplam, ozet, calisan) {
   const kart = document.createElement("div");
   kart.className = "kart";
-  kart.innerHTML =
-    '<img alt="">' +
-    '<div class="ad"></div>' +
-    '<div class="tur"></div>' +
-    '<div class="durum dim">yukleniyor...</div>';
+  kart.innerHTML = '<img alt="" crossorigin="anonymous">' +
+                   '<div class="ad"></div><div class="tur"></div>' +
+                   '<div class="durum">yukleniyor...</div>';
   kart.querySelector(".ad").textContent = kaynak.ad;
   kart.querySelector(".tur").textContent = kaynak.tur;
-  grid.appendChild(kart);
+  hedef.appendChild(kart);
 
   const img = kart.querySelector("img");
   const durum = kart.querySelector(".durum");
@@ -105,36 +99,72 @@ KAYNAKLAR.forEach(function (kaynak) {
     durum.textContent = "CALISIYOR - " + img.naturalWidth + "x" +
                         img.naturalHeight + " px, " + ms + " ms";
     calisan.push(kaynak.ad);
-    bitir();
+
+    if (kaynak.terrarium) coz(kart, img, durum);
+    biten();
   };
   img.onerror = function () {
     kart.classList.add("bad");
     durum.className = "durum bad";
     durum.textContent = "ULASILAMADI";
-    bitir();
+    biten();
   };
   img.src = kaynak.url;
-});
-
-function bitir() {
-  biten += 1;
-  if (biten < KAYNAKLAR.length) {
-    ozet.textContent = biten + " / " + KAYNAKLAR.length + " denendi...";
-    return;
-  }
-  if (!calisan.length) {
-    ozet.className = "bad";
-    ozet.textContent =
-      "Hicbiri gelmedi. Bu, tek tek saglayicilarin degil aginin disari " +
-      "kapali oldugunu gosterir - guvenlik duvari, VPN ya da DNS. " +
-      "Bu durumda cevrimdisi vektor haritayla devam ederiz.";
-    return;
-  }
-  ozet.className = "ok";
-  ozet.textContent = "CALISAN SAGLAYICILAR (" + calisan.length + "):\n  " +
-                     calisan.join("\n  ") +
-                     "\n\nBunlari bana yaz, haritayi buna gore kurayim.";
 }
+
+// Karoyu tuvale cizip ortadaki pikselin kotunu cozer. Bu yalnizca
+// "sunucu cevap verdi" degil, "veri gercekten kot ve dogru" demek.
+function coz(kart, img, durum) {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    const mid = Math.floor(img.naturalWidth / 2);
+    const px = ctx.getImageData(mid, mid, 1, 1).data;
+    const kot = px[0] * 256 + px[1] + px[2] / 256 - 32768;
+    const fark = Math.abs(kot - YEREL_KOT);
+    const satir = document.createElement("div");
+    satir.className = "durum " + (fark < 60 ? "ok" : "warn");
+    satir.textContent = "cozulen kot " + kot.toFixed(0) + " m | yerel .hgl " +
+                        YEREL_KOT + " m | fark " + fark.toFixed(0) + " m";
+    kart.appendChild(satir);
+  } catch (error) {
+    const satir = document.createElement("div");
+    satir.className = "durum bad";
+    satir.textContent = "piksel okunamadi (CORS?): " + error.message;
+    kart.appendChild(satir);
+  }
+}
+
+function calistir(hedef, ozet, liste) {
+  const kutu = document.getElementById(hedef);
+  const ozetKutu = document.getElementById(ozet);
+  const calisan = [];
+  let sayac = 0;
+  const biten = function () {
+    sayac += 1;
+    if (sayac < liste.length) {
+      ozetKutu.textContent = sayac + " / " + liste.length + " denendi...";
+      return;
+    }
+    if (!calisan.length) {
+      ozetKutu.className = "ozet bad";
+      ozetKutu.textContent = "Hicbiri gelmedi.";
+      return;
+    }
+    ozetKutu.className = "ozet ok";
+    ozetKutu.textContent = "CALISAN (" + calisan.length + "):\n  " +
+                           calisan.join("\n  ");
+  };
+  liste.forEach(function (kaynak) {
+    kartYap(kutu, kaynak, biten, liste.length, ozetKutu, calisan);
+  });
+}
+
+calistir("harita", "ozetHarita", HARITA);
+calistir("kot", "ozetKot", KOT);
 </script>
 </body>
 </html>

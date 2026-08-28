@@ -6,282 +6,379 @@
 <script src="plotly.min.js"></script>
 <style>
   :root {
-    --bg: #0d1016;
-    --surface: #12151b;
-    --panel: #171b23;
-    --raised: #1d222c;
-    --line: #2a3040;
-    --ink: #e6e9ef;
-    --muted: #8b93a7;
-    --faint: #5b6478;
-    --route: #ef4d5e;
-    --waypoint: #9a6bff;
-    --good: #35a87c;
-    --warn: #c98a1e;
+    /* Koyu zemin bir tercih degil zorunluluk: yer istasyonu sahada ve
+       gece kullaniliyor. Rota ve waypoint renkleri OKLCH bandi, kroma
+       tabani ve renk korlugu ayrimi olculerek secildi. */
+    --void:    #0a0d12;
+    --panel:   #11151c;
+    --raised:  #171c25;
+    --line:    #222937;
+    --line-hi: #323c4d;
+    --ink:     #e8ecf3;
+    --muted:   #8d96a8;
+    --faint:   #5a6474;
+    --route:   #ef4d5e;
+    --wp:      #9a6bff;
+    --good:    #35a87c;
+    --warn:    #c98a1e;
+
+    --rail: 322px;
+    --deck: 92px;
+
+    /* Bahnschrift DIN soyundan: havacilik levhalarinin ve muhendislik
+       cizimlerinin yazisi. Windows'ta yerlesik, cevrimdisi calisiyor. */
+    --label: "Bahnschrift", "DIN Alternate", "Roboto Condensed",
+             system-ui, sans-serif;
+    --data: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+    --body: system-ui, "Segoe UI", sans-serif;
   }
+
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
-    -webkit-font-smoothing: antialiased;
+    margin: 0; background: var(--void); color: var(--ink);
+    font: 13.5px/1.5 var(--body); -webkit-font-smoothing: antialiased;
+    display: flex; flex-direction: column; overflow: hidden;
   }
 
-  /* --- ust serit --------------------------------------------------- */
+  /* Etiketler tek bir yerden: DIN caps, genis harf araligi. */
+  .eyebrow {
+    font-family: var(--label); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .16em; text-transform: uppercase; color: var(--faint);
+  }
+  .num { font-family: var(--data); font-variant-numeric: tabular-nums; }
+
+  /* ---------- ust serit ---------- */
   header {
-    background: var(--surface); border-bottom: 1px solid var(--line);
-    padding: 10px 18px; display: flex; flex-wrap: wrap;
-    gap: 18px; align-items: flex-end;
+    flex: 0 0 auto; display: flex; align-items: center; gap: 16px;
+    padding: 0 14px; height: 52px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
   }
-  .brand { display: flex; align-items: baseline; gap: 9px; margin-right: 4px; }
-  .brand h1 { font-size: 15px; margin: 0; letter-spacing: .01em;
-               white-space: nowrap; }
-  .brand span { font-size: 11px; color: var(--faint); }
-  .group { display: flex; gap: 10px; align-items: flex-end;
-           padding-right: 18px; border-right: 1px solid var(--line); }
-  .group:last-of-type { border-right: 0; }
-  .group > .tag { font-size: 10px; letter-spacing: .09em;
-                  text-transform: uppercase; color: var(--faint);
-                  writing-mode: vertical-rl; transform: rotate(180deg);
-                  padding: 2px 0; }
-  .field { display: flex; flex-direction: column; gap: 3px; }
-  .field label { font-size: 10px; letter-spacing: .05em;
-                 text-transform: uppercase; color: var(--muted); }
-  .field input {
-    width: 78px; padding: 5px 7px; background: var(--raised);
-    border: 1px solid var(--line); border-radius: 5px; color: var(--ink);
-    font: inherit; font-variant-numeric: tabular-nums;
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand svg { width: 22px; height: 22px; fill: var(--wp); flex: none; }
+  .brand b { font-family: var(--label); font-size: 15px; font-weight: 600;
+             letter-spacing: .05em; text-transform: uppercase; }
+  .brand span { font-family: var(--data); font-size: 10.5px;
+                color: var(--faint); }
+  .spacer { margin-left: auto; }
+
+  /* ---------- kontroller ---------- */
+  button, select, input {
+    font-family: inherit; font-size: 13px; color: var(--ink);
+    background: var(--raised); border: 1px solid var(--line);
+    border-radius: 4px;
   }
-  .field input:focus { outline: none; border-color: var(--waypoint); }
-  .actions { display: flex; gap: 8px; align-items: center;
-             margin-left: auto; }
-
-  button, select {
-    padding: 7px 13px; border: 1px solid var(--line); border-radius: 5px;
-    background: var(--raised); color: var(--ink); font: inherit;
-    font-size: 13px; cursor: pointer;
+  button, select { padding: 6px 11px; cursor: pointer; }
+  button:hover:not(:disabled), select:hover { border-color: var(--line-hi); }
+  button:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--wp); outline-offset: 1px;
   }
-  button:hover:not(:disabled), select:hover { border-color: var(--faint); }
-  button.primary { background: var(--route); border-color: var(--route);
-                   color: #fff; font-weight: 600; }
-  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
-  button:disabled { opacity: .38; cursor: not-allowed; }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  .go { background: var(--route); border-color: var(--route); color: #fff;
+        font-weight: 600; padding: 6px 15px; }
+  .go:hover:not(:disabled) { filter: brightness(1.09); }
 
-  /* --- yerlesim ------------------------------------------------------ */
-  main { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--line);
-          border-radius: 8px; padding: 12px 13px; }
-  .card h2 { font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
-             color: var(--muted); margin: 0 0 10px;
-             display: flex; justify-content: space-between; gap: 10px;
-             align-items: center; }
-  .card h2 em { font-style: normal; color: var(--faint);
-                text-transform: none; letter-spacing: 0; font-size: 11px; }
-  .below { display: grid; gap: 14px; grid-template-columns: 1fr; }
-  .below.split { grid-template-columns: minmax(330px, 420px) 1fr; }
-  .col { display: flex; flex-direction: column; gap: 14px; }
-  .card h2 button { padding: 3px 9px; font-size: 11px; text-transform: none;
-                    letter-spacing: 0; }
-  .card h2 button.on { background: var(--route); border-color: var(--route);
-                       color: #fff; }
+  .seg { display: inline-flex; }
+  .seg button {
+    border-radius: 0; border-left-width: 0; padding: 5px 10px;
+    font-family: var(--label); font-size: 11px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .seg button:first-child { border-radius: 4px 0 0 4px; border-left-width: 1px; }
+  .seg button:last-child { border-radius: 0 4px 4px 0; }
+  .seg button.on { background: var(--wp); border-color: var(--wp);
+                   color: #fff; }
 
-  /* --- harita --------------------------------------------------------- */
-  .mapwrap { position: relative; }
-  #map { height: 58vh; min-height: 380px; border-radius: 6px;
-         overflow: hidden; background: #0f1622; }
-  #labels { position: absolute; inset: 0; pointer-events: none; }
-  .wplabel {
+  /* ---------- govde: kenar seridi | harita | 3B ---------- */
+  main {
+    flex: 1 1 auto; min-height: 0; display: grid; gap: 1px;
+    background: var(--line);
+    grid-template-columns: var(--rail) minmax(0, 1fr);
+  }
+  main.with3d { grid-template-columns: var(--rail) minmax(0, 1fr)
+                                       minmax(0, 1fr); }
+
+  /* Kenar seridi: harita kenar boslugu gibi okunmali - once ucak, sonra
+     gorev, sonra yer. Sirasi bilinci yansitiyor. */
+  .rail { background: var(--panel); overflow-y: auto; overflow-x: hidden; }
+  .block { padding: 13px 14px; border-bottom: 1px solid var(--line); }
+  .block:last-child { border-bottom: 0; }
+  .block > h2 {
+    margin: 0 0 11px; display: flex; align-items: center; gap: 8px;
+    font-family: var(--label); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .16em; text-transform: uppercase; color: var(--faint);
+  }
+  .block > h2 .count { font-family: var(--data); letter-spacing: 0;
+                       color: var(--wp); }
+  .block > h2 button { margin-left: auto; padding: 3px 9px; font-size: 11px;
+                       font-family: var(--label); letter-spacing: .06em;
+                       text-transform: uppercase; }
+  .block > h2 button.on { background: var(--route); border-color: var(--route);
+                          color: #fff; }
+
+  .fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .fields.pair { grid-template-columns: 1fr 1fr; }
+  .field label { display: block; margin-bottom: 3px;
+                 font-family: var(--label); font-size: 9.5px; font-weight: 600;
+                 letter-spacing: .11em; text-transform: uppercase;
+                 color: var(--muted); }
+  .field input { width: 100%; padding: 5px 7px; font-family: var(--data);
+                 font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .field input:focus { outline: none; border-color: var(--wp); }
+
+  .derived { margin: 10px 0 0; font-family: var(--data); font-size: 11.5px;
+             color: var(--muted); }
+  .derived b { color: var(--ink); font-weight: 600; }
+  .hint { margin: 9px 0 0; font-size: 12px; color: var(--faint); }
+  .hint.warn { color: var(--warn); }
+
+  /* ---------- tablolar ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th {
+    text-align: left; padding: 0 4px 5px;
+    font-family: var(--label); font-size: 9.5px; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+  }
+  tbody td { padding: 4px; border-top: 1px solid var(--line);
+             font-family: var(--data); font-variant-numeric: tabular-nums; }
+  tbody td:first-child { width: 22px; color: var(--wp); font-weight: 700; }
+  tbody td input { width: 100%; padding: 2px 5px; font-family: var(--data);
+                   font-size: 12px; font-variant-numeric: tabular-nums; }
+  tbody td.drop { width: 24px; text-align: right; }
+  tbody td.drop button { padding: 0 5px; background: none; border: 0;
+                         color: var(--faint); font-size: 15px; line-height: 1; }
+  tbody td.drop button:hover { color: var(--route); }
+  tbody tr.sel td { background: rgba(154, 107, 255, .13); }
+  tbody tr.bad td { background: rgba(239, 77, 94, .09); }
+  tbody tr.bad td:first-child { box-shadow: inset 2px 0 0 var(--route); }
+  .zonelist td:first-child { color: var(--route); }
+
+  /* ---------- sahne: harita ve 3B ---------- */
+  .stage { position: relative; background: var(--void); min-width: 0; }
+  #map, #view3d { position: absolute; inset: 0; }
+  #labels { position: absolute; inset: 0; pointer-events: none;
+            overflow: hidden; }
+
+  /* Harita uzerine binen seyler kartografik kenar bilgisi gibi: kucuk,
+     tek renk, tiklamayi engellemez. */
+  .overlay { position: absolute; z-index: 3; pointer-events: none;
+             font-family: var(--data); font-size: 10.5px; color: var(--muted);
+             background: rgba(10, 13, 18, .72); padding: 3px 7px;
+             border: 1px solid var(--line); border-radius: 3px; }
+  #readout { left: 8px; bottom: 8px; }
+  #credit { right: 8px; bottom: 8px; max-width: 52%; text-align: right;
+            color: var(--faint); }
+
+  /* Waypoint rozetleri ve bolge tutamaklari: haritanin ustunde HTML,
+     cunku MapLibre'de yazi cizen katman font sunucusu ister. */
+  .wplabel, .zdot, .zgrip {
     position: absolute; transform: translate(-50%, -50%);
-    pointer-events: auto; cursor: grab; user-select: none;
-    min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px;
-    background: var(--waypoint); color: #fff; border: 1.5px solid var(--surface);
-    font-size: 11px; font-weight: 700; line-height: 19px; text-align: center;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, .55);
+    pointer-events: auto; user-select: none;
   }
-  .wplabel.dragging { cursor: grabbing; filter: brightness(1.2); }
+  .wplabel {
+    min-width: 21px; height: 21px; padding: 0 6px; border-radius: 11px;
+    background: var(--wp); color: #fff; border: 1.5px solid var(--panel);
+    font-family: var(--data); font-size: 11px; font-weight: 700;
+    line-height: 18px; text-align: center; cursor: grab;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, .6);
+  }
+  .wplabel.dragging { cursor: grabbing; filter: brightness(1.18); }
   .wplabel.bad { background: var(--route); }
-  #map.placing { cursor: crosshair; }
-  .modes { display: flex; }
-  .modes button { padding: 3px 10px; font-size: 11px; border-radius: 0;
-                  text-transform: none; letter-spacing: 0; border-left: 0; }
-  .modes button:first-child { border-radius: 5px 0 0 5px;
-                              border-left: 1px solid var(--line); }
-  .modes button:last-child { border-radius: 0 5px 5px 0; }
-  .modes button.on { background: var(--waypoint); border-color: var(--waypoint);
-                     color: #fff; }
-  .credit { margin: 6px 2px 0; font-size: 10.5px; color: var(--faint); }
-  .credit a { color: var(--faint); }
+  .wplabel.sel { box-shadow: 0 0 0 3px rgba(154, 107, 255, .45),
+                             0 1px 5px rgba(0, 0, 0, .6); }
+  .zdot {
+    width: 13px; height: 13px; border-radius: 50%; cursor: grab;
+    background: var(--route); border: 1.5px solid var(--panel);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
+  }
+  .zgrip {
+    width: 11px; height: 11px; border-radius: 2px; cursor: ew-resize;
+    background: var(--panel); border: 1.5px solid var(--route);
+  }
+  .zdot.dragging, .zgrip.dragging { filter: brightness(1.25); }
 
-  /* --- waypoint tablosu ---------------------------------------------- */
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; font-weight: 500; font-size: 10px;
-       letter-spacing: .05em; text-transform: uppercase;
-       color: var(--faint); padding: 0 5px 6px; }
-  td { padding: 5px; border-top: 1px solid var(--line);
-       font-variant-numeric: tabular-nums; }
-  td:first-child { color: var(--waypoint); font-weight: 600; width: 26px; }
-  td input { width: 72px; padding: 3px 6px; background: var(--raised);
-             border: 1px solid var(--line); border-radius: 4px;
-             color: var(--ink); font: inherit;
-             font-variant-numeric: tabular-nums; }
-  td button { padding: 1px 8px; font-size: 15px; line-height: 1.2;
-              color: var(--muted); background: none; border: 0; }
-  td button:hover { color: var(--route); }
-  tr.leg-bad td { background: rgba(239, 77, 94, .10); }
-  tr.leg-bad td:first-child { box-shadow: inset 2px 0 0 var(--route); }
-  .ghost { color: var(--faint); font-style: normal; }
+  /* Bolge cizerken: canli halka, merkeze giden kesikli olcu cizgisi ve
+     yaricap okumasi. Pergel gibi. */
+  #guide { position: absolute; inset: 0; pointer-events: none; display: none; }
+  #guide.on { display: block; }
+  #guide .ring { position: absolute; border-radius: 50%;
+                 border: 1.5px dashed var(--route);
+                 background: rgba(239, 77, 94, .12);
+                 transform: translate(-50%, -50%); }
+  #guide .rule { position: absolute; height: 0;
+                 border-top: 1px dashed var(--route); transform-origin: 0 0; }
+  #guide .tag { position: absolute; transform: translate(9px, -50%);
+                font-family: var(--data); font-size: 11px; color: #fff;
+                background: var(--route); padding: 2px 6px;
+                border-radius: 3px; white-space: nowrap; }
+  #map.arming { cursor: crosshair; }
 
-  /* --- oynatma serit -------------------------------------------------- */
-  .controls { display: flex; gap: 10px; align-items: center;
-              margin-top: 10px; padding-top: 10px;
-              border-top: 1px solid var(--line); }
-  .controls input[type=range] { flex: 1; accent-color: var(--route); }
-  #clock { font-variant-numeric: tabular-nums; font-size: 12px;
-           color: var(--muted); min-width: 178px; text-align: right; }
+  /* ---------- alt gosterge seridi ---------- */
+  .deck {
+    flex: 0 0 auto; background: var(--panel);
+    border-top: 1px solid var(--line); padding: 9px 14px;
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 10px 16px;
+  }
+  .transport { display: flex; align-items: center; gap: 8px; flex: 1 1 46%;
+               min-width: 300px; }
+  .transport input[type=range] { flex: 1; accent-color: var(--route);
+                                 min-width: 80px; }
+  #clock { font-family: var(--data); font-size: 11.5px; color: var(--muted);
+           white-space: nowrap; }
 
-  /* --- durum kutulari -------------------------------------------------- */
-  .tiles { display: grid; grid-template-columns: repeat(4, 1fr);
-           gap: 10px; margin-top: 12px; }
-  .tile { background: var(--raised); border: 1px solid var(--line);
-          border-radius: 7px; padding: 9px 11px; }
-  .tile .k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
-             color: var(--faint); }
-  .tile .v { font-size: 21px; font-weight: 600; line-height: 1.25;
-             font-variant-numeric: tabular-nums; }
-  .tile .u { font-size: 11px; color: var(--muted); margin-left: 3px;
-             font-weight: 400; }
-  .tile.good .v { color: var(--good); }
-  .tile.warn .v { color: var(--warn); }
-  .tile.bad  .v { color: var(--route); }
-  #status { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+  .gauges { display: flex; gap: 20px; margin-left: auto; }
+  .gauge { display: flex; flex-direction: column; gap: 1px; min-width: 74px; }
+  .gauge .k { font-family: var(--label); font-size: 9.5px; font-weight: 600;
+              letter-spacing: .12em; text-transform: uppercase;
+              color: var(--faint); }
+  .gauge .v { font-family: var(--data); font-size: 17px; font-weight: 600;
+              font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .gauge .u { font-size: 10.5px; color: var(--muted); margin-left: 2px;
+              font-weight: 400; }
+  .gauge.good .v { color: var(--good); }
+  .gauge.warn .v { color: var(--warn); }
+  .gauge.bad  .v { color: var(--route); }
+
+  #status { flex: 0 0 100%; margin: 0; font-size: 12px; color: var(--muted);
+            border-top: 1px solid var(--line); padding-top: 8px; }
   #status.bad { color: var(--route); }
-  #view3d { height: 46vh; min-height: 340px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .stage { transition: opacity .18s ease; }
+  }
 </style>
 </head>
 <body>
 
 <header>
   <div class="brand">
-    <h1>IHA Gorev Planlayici</h1>
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 1.6 13.2 8.4 22.4 13.1v2.1L13.2 12.6l-.4 5.1 3.1 2.3v1.4
+               L12 20.2 8.1 21.4v-1.4l3.1-2.3-.4-5.1L1.6 15.2v-2.1L10.8 8.4Z"/>
+    </svg>
+    <b>Gorev Planlayici</b>
     <span>Dubins RRT*</span>
   </div>
 
-  <div class="group">
-    <span class="tag">ucak</span>
-    <div class="field"><label>hiz m/s</label>
-      <input id="speed" type="number" value="28" min="5" max="120" step="1"></div>
-    <div class="field"><label>yatis&deg;</label>
-      <input id="bank" type="number" value="30" min="5" max="60" step="1"></div>
-    <div class="field"><label>tirmanma&deg;</label>
-      <input id="climb" type="number" value="8" min="1" max="45" step="1"></div>
-  </div>
+  <span class="seg" id="modeSeg">
+    <button id="mode2d" class="on" title="Yatay rota, sabit seyir irtifasi">2B</button>
+    <button id="mode3d" title="Araziden kacinan uc boyutlu rota">3B</button>
+  </span>
 
-  <div class="group">
-    <span class="tag">mod</span>
-    <div class="field"><label>planlama</label>
-      <span class="modes">
-        <button id="mode2d" class="on">2B</button>
-        <button id="mode3d">3B</button>
-      </span></div>
-    <div class="field" id="cruiseField"><label>seyir m MSL</label>
-      <input id="cruise" type="number" value="1000" min="0" max="12000"
-             step="100"></div>
-  </div>
+  <span class="seg" id="layerSeg">
+    <button id="layerSat" class="on">Uydu</button>
+    <button id="layerStreet">Harita</button>
+    <button id="layerTopo">Topo</button>
+    <button id="layerOffline">Cevrimdisi</button>
+  </span>
 
-  <div class="group">
-    <span class="tag">gorev</span>
-    <div class="field"><label>emniyet m</label>
-      <input id="clearance" type="number" value="100" min="0" max="1000" step="10"></div>
-    <div class="field"><label>yineleme</label>
-      <input id="iterations" type="number" value="3000" min="200" max="20000" step="500"></div>
-    <div class="field"><label>tohum</label>
-      <input id="seed" type="number" value="1" min="0" step="1"></div>
-  </div>
-
-  <div class="actions">
-    <span id="rho" class="ghost"></span>
-    <button id="clear">Temizle</button>
-    <button id="plan" class="primary" disabled>Rotayi planla</button>
-  </div>
+  <span class="spacer"></span>
+  <button id="toggle3d">3B panel</button>
+  <button id="clear">Temizle</button>
+  <button id="plan" class="go" disabled>Rotayi planla</button>
 </header>
 
-<main>
-  <div class="card">
-    <h2>
-      <span id="mapTitle">Harita <em>tikla waypoint ekle &middot; numarayi surukle tasi</em></span>
-      <span style="display:flex; gap:8px; align-items:center">
-        <span class="modes">
-          <button id="layerSat" class="on">Uydu</button>
-          <button id="layerStreet">Harita</button>
-          <button id="layerTopo">Topo</button>
-          <button id="layerOffline">Cevrimdisi</button>
-        </span>
-        <button id="toggle3d">3B goster</button>
-      </span>
-    </h2>
-
-    <div class="mapwrap">
-      <div id="map"></div>
-      <div id="labels"></div>
-    </div>
-    <p class="credit" id="credit"></p>
-
-    <div class="controls">
-      <button id="play" disabled>Oynat</button>
-      <select id="rate" title="oynatma hizi">
-        <option value="1">1&times;</option>
-        <option value="5" selected>5&times;</option>
-        <option value="20">20&times;</option>
-        <option value="60">60&times;</option>
-      </select>
-      <input id="scrub" type="range" min="0" max="0" value="0" disabled>
-      <span id="clock">--</span>
-    </div>
-
-    <div class="tiles">
-      <div class="tile"><div class="k">uzunluk</div>
-        <div class="v" id="statLength">&ndash;<span class="u">km</span></div></div>
-      <div class="tile"><div class="k">ucus suresi</div>
-        <div class="v" id="statTime">&ndash;</div></div>
-      <div class="tile" id="tileAgl"><div class="k" id="aglKey">en dusuk AGL</div>
-        <div class="v" id="statAgl">&ndash;<span class="u">m</span></div></div>
-      <div class="tile"><div class="k">bacak</div>
-        <div class="v" id="statLegs">&ndash;</div></div>
-    </div>
-
-    <div id="status">Haritaya tiklayarak en az iki waypoint koy.</div>
-  </div>
-
-  <div class="below" id="below">
-    <div class="col">
-      <div class="card">
-        <h2>Waypointler <em id="altUnit">irtifa</em></h2>
-        <table>
-          <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
-            <th id="altHead">irtifa m</th><th></th></tr></thead>
-          <tbody id="wplist"></tbody>
-        </table>
-        <p id="empty" class="ghost">Haritaya tiklayarak baslayin.</p>
+<main id="stageRow">
+  <aside class="rail">
+    <section class="block">
+      <h2>Ucak</h2>
+      <div class="fields">
+        <div class="field"><label>hiz m/s</label>
+          <input id="speed" type="number" value="28" min="5" max="120" step="1"></div>
+        <div class="field"><label>yatis&deg;</label>
+          <input id="bank" type="number" value="30" min="5" max="60" step="1"></div>
+        <div class="field"><label>tirmanma&deg;</label>
+          <input id="climb" type="number" value="8" min="1" max="45" step="1"></div>
       </div>
+      <p class="derived" id="rho">donus yaricapi <b>&ndash;</b></p>
+    </section>
 
-      <div class="card">
-        <h2>Yasak bolgeler
-          <button id="addZone">Bolge ekle</button></h2>
-        <table>
-          <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
-            <th>yaricap m</th><th></th></tr></thead>
-          <tbody id="zonelist"></tbody>
-        </table>
-        <p id="noZone" class="ghost">Yok. "Bolge ekle" deyip haritaya tikla.</p>
+    <section class="block">
+      <h2>Gorev</h2>
+      <div class="fields">
+        <div class="field" id="cruiseField"><label>seyir m</label>
+          <input id="cruise" type="number" value="1000" min="0" max="12000" step="100"></div>
+        <div class="field"><label>emniyet m</label>
+          <input id="clearance" type="number" value="100" min="0" max="1000" step="10"></div>
+        <div class="field"><label>yineleme</label>
+          <input id="iterations" type="number" value="3000" min="200" max="20000" step="500"></div>
       </div>
-    </div>
+      <div class="fields pair" style="margin-top:8px">
+        <div class="field"><label>tohum</label>
+          <input id="seed" type="number" value="1" min="0" step="1"></div>
+      </div>
+    </section>
 
-    <div class="card" id="panel3d" hidden>
-      <h2>3B gorunum <em>surukle dondur &middot; tekerlek yakinlastir</em></h2>
-      <div id="view3d"></div>
-      <p id="hint3d" class="ghost" style="margin:8px 0 0"></p>
-    </div>
-  </div>
+    <section class="block">
+      <h2>Waypointler <span class="count" id="wpCount">0</span>
+        <button id="addWp">Ekle</button></h2>
+      <table>
+        <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
+          <th id="altHead">seyir m</th><th></th></tr></thead>
+        <tbody id="wplist"></tbody>
+      </table>
+      <p class="hint" id="empty">Ekle'ye bas, sonra haritaya tikla.</p>
+      <p class="hint" id="altUnit"></p>
+    </section>
+
+    <section class="block">
+      <h2>Yasak bolge <span class="count" id="zoneCount">0</span>
+        <button id="addZone">Ekle</button></h2>
+      <table class="zonelist">
+        <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
+          <th>yaricap m</th><th></th></tr></thead>
+        <tbody id="zonelist"></tbody>
+      </table>
+      <p class="hint" id="noZone">Ekle'ye bas, haritada merkezden disariya
+        surukle.</p>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <div id="map"></div>
+    <div id="labels"></div>
+    <div id="guide"></div>
+    <div class="overlay" id="readout">&ndash;</div>
+    <div class="overlay" id="credit"></div>
+  </section>
+
+  <section class="stage" id="panel3d" hidden>
+    <div id="view3d"></div>
+    <div class="overlay" id="stageTag3d" style="left:8px;top:8px;
+         font-family:var(--label);letter-spacing:.14em;
+         text-transform:uppercase;font-size:10px">3b gorunum</div>
+    <div class="overlay" id="hint3d" style="left:8px;bottom:8px;
+         max-width:66%"></div>
+  </section>
 </main>
+
+<footer class="deck">
+  <div class="transport">
+    <button id="play" disabled>Oynat</button>
+    <select id="rate" title="oynatma hizi">
+      <option value="1">1&times;</option>
+      <option value="5" selected>5&times;</option>
+      <option value="20">20&times;</option>
+      <option value="60">60&times;</option>
+    </select>
+    <input id="scrub" type="range" min="0" max="0" value="0" disabled>
+    <span id="clock">&ndash;</span>
+  </div>
+
+  <div class="gauges">
+    <div class="gauge"><span class="k">uzunluk</span>
+      <span class="v" id="statLength">&ndash;<span class="u">km</span></span></div>
+    <div class="gauge"><span class="k">ucus suresi</span>
+      <span class="v" id="statTime">&ndash;</span></div>
+    <div class="gauge" id="tileAgl"><span class="k" id="aglKey">en dusuk agl</span>
+      <span class="v" id="statAgl">&ndash;<span class="u">m</span></span></div>
+    <div class="gauge"><span class="k">bacak</span>
+      <span class="v" id="statLegs">&ndash;</span></div>
+  </div>
+
+  <p id="status">Haritaya tiklayarak en az iki waypoint koy.</p>
+</footer>
 
 <script src="app.js"></script>
 </body>
