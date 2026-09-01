@@ -131,6 +131,9 @@
   .derived b { color: var(--ink); font-weight: 600; }
   .hint { margin: 9px 0 0; font-size: 12px; color: var(--faint); }
   .hint.warn { color: var(--warn); }
+  .check { display: flex; align-items: center; gap: 7px; margin-top: 10px;
+           font-size: 12px; color: var(--muted); cursor: pointer; }
+  .check input { accent-color: var(--wp); cursor: pointer; }
 
   /* ---------- tablolar ---------- */
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -261,11 +264,6 @@
     <span>Dubins RRT*</span>
   </div>
 
-  <span class="seg" id="modeSeg">
-    <button id="mode2d" class="on" title="Yatay rota, sabit seyir irtifasi">2B</button>
-    <button id="mode3d" title="Araziden kacinan uc boyutlu rota">3B</button>
-  </span>
-
   <span class="seg" id="layerSeg">
     <button id="layerSat" class="on">Uydu</button>
     <button id="layerStreet">Harita</button>
@@ -297,17 +295,27 @@
     <section class="block">
       <h2>Gorev</h2>
       <div class="fields">
-        <div class="field" id="cruiseField"><label>seyir m</label>
-          <input id="cruise" type="number" value="1000" min="0" max="12000" step="100"></div>
         <div class="field"><label>emniyet m</label>
           <input id="clearance" type="number" value="100" min="0" max="1000" step="10"></div>
         <div class="field"><label>yineleme</label>
           <input id="iterations" type="number" value="3000" min="200" max="20000" step="500"></div>
       </div>
-      <div class="fields pair" style="margin-top:8px">
+      <div class="fields" style="margin-top:8px">
         <div class="field"><label>tohum</label>
           <input id="seed" type="number" value="1" min="0" step="1"></div>
+        <div class="field" title="Ruzgar hizi, m/s"><label>ruzgar m/s</label>
+          <input id="windSpeed" type="number" value="0" min="0" max="40"
+                 step="1"></div>
+        <div class="field" title="Ruzgarin GELDIGI yon: 270 = batidan">
+          <label>yon&deg;</label>
+          <input id="windFrom" type="number" value="270" min="0" max="360"
+                 step="10"></div>
       </div>
+      <p class="derived" id="windNote">ruzgar yok, sure sakin hava</p>
+      <label class="check" title="Yatay rota, tek seyir kotu. 3B takildiginda
+ya da karsilastirma icin.">
+        <input id="flat" type="checkbox"> araziyi yok say (2B)</label>
+      <p class="derived" id="planKind">plan modu <b>&ndash;</b></p>
     </section>
 
     <section class="block">
@@ -315,7 +323,7 @@
         <button id="addWp">Ekle</button></h2>
       <table>
         <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
-          <th id="altHead">seyir m</th><th></th></tr></thead>
+          <th id="altHead">kot m</th><th></th></tr></thead>
         <tbody id="wplist"></tbody>
       </table>
       <p class="hint" id="empty">Ekle'ye bas, sonra haritaya tikla.</p>
@@ -369,7 +377,7 @@
   <div class="gauges">
     <div class="gauge"><span class="k">uzunluk</span>
       <span class="v" id="statLength">&ndash;<span class="u">km</span></span></div>
-    <div class="gauge"><span class="k">ucus suresi</span>
+    <div class="gauge"><span class="k" id="timeKey">ucus suresi</span>
       <span class="v" id="statTime">&ndash;</span></div>
     <div class="gauge" id="tileAgl"><span class="k" id="aglKey">en dusuk agl</span>
       <span class="v" id="statAgl">&ndash;<span class="u">m</span></span></div>

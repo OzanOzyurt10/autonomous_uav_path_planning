@@ -19,12 +19,14 @@ import posixpath
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from app.mission import (Constraints, Zone, agl_profile, build_env,
-                         build_env_2d, geo_window, plan_mission,
-                         plan_mission_2d, sample_leg, sample_mission)
+from app.mission import (Constraints, Zone, agl_profile, auto_altitude,
+                         build_env, build_env_2d, geo_window, plan_mission,
+                         plan_mission_2d, sample_leg, sample_mission,
+                         waypoint_altitudes)
 from src.geo import Frame
 from src.terrain import MissingTiles, TileStore, tile_name
 from src.terrarium import ElevationUnavailable, TerrariumSource
+from src.wind import flight_time, ground_speeds, wind_vector
 
 # .geojson standart tabloda yok; olmazsa octet-stream gider ve calisir,
 # ama dogru tipi vermek tarayici tarafinda surpriz birakmiyor.
@@ -41,7 +43,11 @@ TILE_SOURCES = ["data", "ALPS.hglzip"]
 START_LAT, START_LON = 46.15, 14.35
 START_SIZE = 20000.0
 
-MAX_WINDOW = 60000.0           # tek kenar; ustunde planlama dakikalara cikiyor
+# Tek kenar. Sinirin sebebi sure DEGIL: 150 km'lik pencere 3B'de ~20 s
+# suruyor. Sinir arazi modelinin kabalasmasindan: post araligi pencereyle
+# birlikte buyuyor (asagida), 100 km'de ~145 m'ye cikiyor ve dar sirtlar
+# iki post arasina dusmeye basliyor.
+MAX_WINDOW = 100000.0
 # Arazi yokken harita hacminin tavan ve tabani. Zemin bilinmedigi icin
 # irtifa MSL okunuyor; arayuz bunu acikca yaziyor.
 NO_TERRAIN_FLOOR = 0.0
@@ -54,7 +60,12 @@ MAX_WAYPOINTS = 12             # her bacak ayri bir RRT* kosusu
 # yeri olsun. Donus yaricapiyla da buyuyor, dar pencerede Dubins sikisiyor.
 WINDOW_MARGIN = 2000.0
 MAX_ZONES = 24
-DEFAULT_CRUISE = 1000.0        # 2B seyir irtifasi, MSL
+# Seyir kotu artik girilmiyor, zeminden turetiliyor. Bu deger yalnizca
+# arazi verisi hic yokken kullaniliyor: zemin bilinmedigi icin MSL.
+NO_TERRAIN_CRUISE = 1000.0
+# Otomatik seyir kotunun uzerinde birakilan manevra payi. Tavan bunun
+# altinda kalirsa is_free waypointi "harita disinda" sayar.
+CLIMB_ROOM = 300.0
 
 STORE = TileStore(TILE_SOURCES)
 
@@ -62,7 +73,17 @@ STORE = TileStore(TILE_SOURCES)
 # altina yaziliyor; ayni bolge ikinci kez planlanirsa ag gerekmiyor.
 # 3B'nin dunyanin her yerinde calisabilmesinin sarti bu.
 TERRARIUM = TerrariumSource()
-DOWNLOAD_SPACING = 90.0        # indirilen arazinin post araligi, metre
+# Indirilen arazinin post araligi artik sabit degil, pencereyle olcekli.
+# Sabit 90 m'de 120 km'lik pencere 90 karo isterdi ve TerrariumSource 64
+# karo sinirinda reddederdi. Kenar basina hedef post sayisini sabit
+# tutmak hem karo butcesini hem cizim yukunu sinirda tutuyor.
+MIN_SPACING = 90.0             # daha incesi karo cozunurlugunu asiyor
+TARGET_POSTS = 700             # kenar basina
+
+
+def download_spacing(width_m: float, height_m: float) -> float:
+    """Pencereye gore indirilecek arazinin post araligi, metre."""
+    return max(MIN_SPACING, max(width_m, height_m) / TARGET_POSTS)
 
 
 class Session:
@@ -96,8 +117,9 @@ class Session:
         except MissingTiles as error:
             missing = error.names
             try:
-                terrain = TERRARIUM.window(lat, lon, width_m, height_m,
-                                           DOWNLOAD_SPACING)
+                terrain = TERRARIUM.window(
+                    lat, lon, width_m, height_m,
+                    download_spacing(width_m, height_m))
                 source = "indirilen"
             except (ElevationUnavailable, ValueError) as problem:
                 print(f"  arazi indirilemedi: {problem}", flush=True)
@@ -128,7 +150,7 @@ def _display_stride(terrain):
     """Tarayiciya gonderilecek seyreltme adimi.
 
     Planlayici her zaman tam cozunurluk goruyor; bu yalnizca cizim icin.
-    60 km karede 613 bin post var, Plotly yuzeyi orada kilitleniyor.
+    100 km karede yarim milyon post var, Plotly yuzeyi orada kilitleniyor.
     """
     posts = terrain.cols * terrain.rows
     if posts <= DISPLAY_POSTS:
@@ -204,6 +226,49 @@ def _constraints_from(body):
     )
 
 
+def _run_2d(points, frame, peak, bounds, zones, constraints):
+    """Yatay rota, tek seyir kotu; arazi HESABA KATILMIYOR.
+
+    Kot girilmiyor: arazi varsa pencerenin en yuksek noktasinin uzerinde,
+    yoksa sabit MSL. Arazi istemedigi icin dunyanin her yerinde kosuyor -
+    3B'nin kurulamadigi ve takildigi durumlarin yedegi bu.
+    """
+    cruise = (auto_altitude(peak, constraints.clearance)
+              if peak is not None else NO_TERRAIN_CRUISE)
+    env = build_env_2d((0.0, 0.0, bounds[3], bounds[4]), constraints,
+                       tuple(zone.as_obstacle() for zone in zones))
+    waypoints = [frame.to_local(*point) for point in points]
+    for index, point in enumerate(waypoints):
+        if not env.is_free(point):
+            raise ValueError(f"{index + 1}. waypoint yasak bolgenin icinde "
+                             f"ya da harita disinda")
+    mission = plan_mission_2d(waypoints, env, constraints, cruise)
+    # Yuk hep (x, y, z) olsun: 3B gorunum waypointleri seyir kotunda
+    # cizebilsin diye.
+    return mission, [(x, y, cruise) for x, y in waypoints]
+
+
+def _run_3d(flat, altitudes, pinned, terrain, bounds, zones, constraints):
+    """Araziden ve yasak bolgelerden kacinan uc boyutlu rota.
+
+    Kotlar disarida hesaplandi: harita tavani onlara bagli ve tavan
+    bolgelerden once kurulmak zorunda.
+    """
+    env = build_env(bounds, terrain, constraints,
+                    tuple(zone.as_cylinder() for zone in zones))
+    waypoints = [(x, y, z) for (x, y), z in zip(flat, altitudes)]
+    for index, point in enumerate(waypoints):
+        if env.is_free(point):
+            continue
+        # Kot ya otomatik ya da emniyet payi kontrolunden gecmis: arazi
+        # sebep olamaz, geriye yasak bolge ve harita disi kalir.
+        how = "sabit" if pinned[index] is not None else "otomatik"
+        raise ValueError(f"{index + 1}. waypoint yasak bolgenin icinde ya "
+                         f"da harita disinda (kot {how}: {point[2]:.0f} m). "
+                         f"Waypointi kaydir ya da bolgeyi kucult.")
+    return plan_mission(waypoints, env, constraints), waypoints
+
+
 def plan_payload(body):
     """Enlem/boylam waypointlerinden rota uretir.
 
@@ -218,12 +283,16 @@ def plan_payload(body):
         raise ValueError(f"en fazla {MAX_WAYPOINTS} waypoint "
                          f"(her bacak ayri bir planlama kosusu)")
 
-    mode = str(body.get("mode", "2d")).lower()
-    if mode not in ("2d", "3d"):
-        raise ValueError(f"mod '2d' ya da '3d' olmali: {mode}")
+    # Mod artik kullanicinin sectigi bir sey degil, arazinin sonucu.
+    # Tek istisna: karsilastirma ya da 3B takildiginda elle 2B'ye inmek.
+    ignore_terrain = bool(body.get("ignore_terrain", False))
 
     points = [(float(p[0]), float(p[1])) for p in raw]     # (enlem, boylam)
-    altitudes = [float(p[2]) for p in raw]
+    # Ucuncu eleman istege bagli kot sabitlemesi, AGL. Yok ya da null ise
+    # o waypointin kotu otomatik. 2B'de yok sayiliyor: orada butun rota
+    # tek kotta, waypoint basina irtifa tanimsiz.
+    pinned = [float(p[2]) if len(p) > 2 and p[2] is not None else None
+              for p in raw]
     constraints = _constraints_from(body)
 
     margin = max(WINDOW_MARGIN, 4 * constraints.rho)
@@ -234,46 +303,49 @@ def plan_payload(body):
         missing = list(SESSION.missing)
         source = SESSION.source
 
-    if mode == "3d" and terrain is None:
-        raise ValueError(
-            "3B mod arazi verisi istiyor. Yerel karo yok ve internetten de "
-            "indirilemedi; baglantiyi kontrol et ya da 2B modda planla.")
+    # Arazi yoksa 3B zaten kurulamaz; hata degil, 2B'ye dusuyoruz. Bu
+    # uygulamanin dunyanin her yerinde calisabilmesinin sarti.
+    mode = "2d" if (terrain is None or ignore_terrain) else "3d"
+
+    # Pencerenin en yuksek postu: hem 2B seyir kotu hem harita tavani
+    # bundan turuyor. min/max butun izgarayi tariyor, bir kez hesapla.
+    peak = terrain.elevation_range()[1] if terrain is not None else None
+
+    # 3B kotlar tavandan ONCE hesaplaniyor: sabitlenen bir waypoint
+    # tavani zorlayabiliyor ve yasak bolgeler tavana gore kuruluyor.
+    # Sira bozulursa bolgeler tavanin altinda kalir ve ucak ustlerinden
+    # gecer - istenmeyen davranis.
+    flat, altitudes = [], []
+    if mode == "3d":
+        flat = [frame.to_local(*point) for point in points]
+        altitudes = waypoint_altitudes(
+            [terrain.elevation_at(x, y) for x, y in flat],
+            constraints.clearance, pinned)
+
+    if peak is not None:
+        # Otomatik kot eski tavanin (tepe + 400 m) ustune cikabiliyor;
+        # ciktiginda is_free waypointi "harita disinda" sayar ve hatanin
+        # sebebi gorunmez. Tavan kuralla birlikte yukseliyor.
+        ceiling = auto_altitude(peak, constraints.clearance) + CLIMB_ROOM
+        if altitudes:
+            ceiling = max(ceiling, max(altitudes) + CLIMB_ROOM)
+        bounds = bounds[:5] + (max(bounds[5], ceiling),)
 
     zones = _zones_from(body, frame, bounds)
 
+    fell_back = False
+    if mode == "3d":
+        mission, waypoints = _run_3d(flat, altitudes, pinned, terrain,
+                                     bounds, zones, constraints)
+        # Tirmanma sinirinin kaldiramadigi bir sirt butun gorevi
+        # cope atmasin: araziyi yok sayan rota hala bir sonuc, yeter ki
+        # oyle oldugu soylensin. Arayuz bunu yuksek sesle yaziyor.
+        if not mission.found:
+            mode, fell_back = "2d", True
+
     if mode == "2d":
-        # 2B: yatay rota, sabit seyir irtifasi, arazi HESABA KATILMIYOR.
-        cruise = float(body.get("cruise", DEFAULT_CRUISE))
-        env = build_env_2d((0.0, 0.0, bounds[3], bounds[4]), constraints,
-                           tuple(zone.as_obstacle() for zone in zones))
-        waypoints = [frame.to_local(*point) for point in points]
-        for index, point in enumerate(waypoints):
-            if env.is_free(point):
-                continue
-            raise ValueError(
-                f"{index + 1}. waypoint yasak bolgenin icinde ya da "
-                f"harita disinda")
-        mission = plan_mission_2d(waypoints, env, constraints, cruise)
-        # Yuk hep (x, y, z) olsun: 3B gorunum waypointleri seyir
-        # irtifasinda cizebilsin diye.
-        waypoints = [(x, y, cruise) for x, y in waypoints]
-    else:
-        # Arazi varsa irtifa AGL olarak okunuyor.
-        env = build_env(bounds, terrain, constraints,
-                        tuple(zone.as_cylinder() for zone in zones))
-        waypoints = []
-        for (point_lat, point_lon), altitude in zip(points, altitudes):
-            x, y = frame.to_local(point_lat, point_lon)
-            waypoints.append((x, y, terrain.elevation_at(x, y) + altitude))
-        for index, point in enumerate(waypoints):
-            if env.is_free(point):
-                continue
-            ground = terrain.elevation_at(point[0], point[1])
-            raise ValueError(
-                f"{index + 1}. waypoint gecersiz: irtifa {point[2]:.0f} m, "
-                f"zemin {ground:.0f} m, gereken en az "
-                f"{ground + constraints.clearance:.0f} m")
-        mission = plan_mission(waypoints, env, constraints)
+        mission, waypoints = _run_2d(points, frame, peak, bounds, zones,
+                                     constraints)
 
     step = constraints.speed * FRAME_SECONDS
 
@@ -290,15 +362,27 @@ def plan_payload(body):
 
     poses = sample_mission(mission, step)
     agls = agl_profile(poses, terrain)
+    # constraints.speed HAVA hizi: rho hesabi da ondan turuyor. Yer hizi
+    # ruzgardan cikiyor ve rota boyunca degisiyor.
+    wind = _wind_payload(poses, constraints.speed,
+                         float(body.get("wind_speed", 0.0)),
+                         float(body.get("wind_from", 0.0)))
     failed = [index + 1 for index, leg in enumerate(mission.legs)
               if not leg.found]
 
     return {
         "ok": mission.found,
         "mode": mode,
+        # Arayuz "istedigim bu muydu" sorusunu sorabilsin diye: mod artik
+        # secilmiyor, bu iki bayrak nicin o modda kosuldugunu anlatiyor.
+        "fell_back": fell_back,
+        "forced_2d": ignore_terrain,
         "rho": constraints.rho,
         "cost": mission.cost if mission.found else None,
+        # Iki sure birden: biri sakin hava (uzunluk / hava hizi), digeri
+        # ruzgar altinda. Arayuz hangisini gosterdigini yazmak zorunda.
         "duration": mission.duration if mission.found else None,
+        "wind": wind,
         "frame_seconds": FRAME_SECONDS,
         # Arayuz yerel metreyi enlem/boylama kendi ceviriyor; rotayi iki
         # kez gondermek yukun yarisini bosa harcardi.
@@ -309,6 +393,11 @@ def plan_payload(body):
         "has_terrain": terrain is not None,
         "missing": missing,
         "terrain_source": source,
+        # Post araligi pencereyle degistigi icin arayuz bunu SOYLEMEK
+        # zorunda: emniyet payi kabalasmis bir zeminden olculuyorsa
+        # kullanici bilmeli.
+        "terrain_spacing": (max(terrain.spacing_x, terrain.spacing_y)
+                            if terrain is not None else None),
         "waypoints": [[round(point[0], 2), round(point[1], 2),
                        round(point[2], 1)] for point in waypoints],
         "zones": [{"x": zone.x, "y": zone.y, "radius": zone.radius}
@@ -320,11 +409,39 @@ def plan_payload(body):
         # Arazi yoksa AGL yok: irtifa MSL ve zemin dogrulanmamis.
         "agl": {"min": min(agls), "max": max(agls),
                 "mean": sum(agls) / len(agls)} if agls else None,
+        # Kot artik girilmiyor; rotayi yukselten tek kol emniyet payi.
         "message": ("" if mission.found else
                     f"{', '.join(str(n) for n in failed)}. bacak "
-                    f"planlanamadi; irtifayi yukselt, yineleme sayisini "
-                    f"artir ya da waypoint'i kaydir"),
+                    f"planlanamadi; emniyet payini artir (rotayi yukseltir), "
+                    f"yineleme sayisini artir ya da waypoint'i kaydir"),
     }
+
+
+def _wind_payload(poses, airspeed, speed, from_deg):
+    """Ruzgar altinda sure ve yer hizi araligi.
+
+    Ruzgar rotanin GEOMETRISINI degistirmiyor; burada yalnizca o rotanin
+    ne kadar surecegi yeniden hesaplaniyor. Yan ruzgar hava hizini asarsa
+    rota gecerli kalir ama UCULAMAZ - plani cope atmak yerine sebebi
+    soyleyip rotayi geri veriyoruz.
+    """
+    payload = {"speed": speed, "from_deg": from_deg, "duration": None,
+               "min_speed": None, "max_speed": None, "message": ""}
+    if not poses:
+        return payload
+
+    wind = wind_vector(speed, from_deg)
+    try:
+        payload["duration"] = flight_time(poses, airspeed, wind)
+        speeds = ground_speeds(poses, airspeed, wind)
+    except ValueError as error:
+        payload["message"] = str(error)
+        return payload
+
+    if speeds:
+        payload["min_speed"] = min(speeds)
+        payload["max_speed"] = max(speeds)
+    return payload
 
 
 def _zones_from(body, frame, bounds):

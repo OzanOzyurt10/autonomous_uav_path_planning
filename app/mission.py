@@ -23,6 +23,7 @@ from src.terrain import Terrain
 import random
 
 GRAVITY = 9.80665
+ALTITUDE_MARGIN = 100.0
 
 Point3 = tuple[float, float, float]
 Pose3 = tuple[float, float, float, float]
@@ -32,7 +33,9 @@ Pose3 = tuple[float, float, float, float]
 class Constraints:
     """Ucak kartindan doldurulan kisitlar; rho bunlardan turetiliyor."""
 
-    speed: float                  # seyir hizi, m/s
+    # Seyir HAVA hizi, m/s. Ruzgar girildiginde yer hizi bundan ayrisiyor
+    # (src/wind.py); rho hesabi hava hizini istedigi icin dogru olan bu.
+    speed: float
     max_bank: float               # azami yatis acisi, radyan
     max_climb: float              # azami tirmanma/alcalma acisi, radyan
     clearance: float              # araziden ve engellerden emniyet payi, m
@@ -131,7 +134,7 @@ class Mission:
     legs: list[Leg]
     found: bool                   # butun bacaklar bulundu mu
     cost: float                   # metre; bir bacak bile bulunamadiysa inf
-    duration: float               # saniye, sabit hizda
+    duration: float               # saniye, SAKIN havada (uzunluk / hava hizi)
 
 
 def _bearing(origin: Point3, target: Point3) -> float:
@@ -212,6 +215,43 @@ def build_env(bounds, terrain: Terrain | None, constraints: Constraints,
               obstacles: tuple[Cylinder, ...] = ()) -> Environment3D:
     """Kisitlardaki emniyet payiyla 3B ortam kurar."""
     return Environment3D(bounds, obstacles, constraints.clearance, terrain)
+
+
+def auto_altitude(ground: float, clearance: float) -> float:
+    """Zeminden turetilen seyir kotu: zemin + emniyet payi + sabit pay.
+
+    Kullanici artik irtifa girmiyor. Ayni kural iki yerde geciyor - 3B'de
+    her waypoint icin kendi zemininden, 2B'de pencerenin en yuksek
+    noktasindan - o yuzden tek yerde duruyor.
+    """
+    return ground + clearance + ALTITUDE_MARGIN
+
+
+def waypoint_altitudes(grounds, clearance: float, pinned=None) -> list[float]:
+    """Her waypointin kotu; sabitlenmisse zemin + sabitleme, yoksa otomatik.
+
+    Sabitleme AGL olarak veriliyor cunku otomatik kural da zemine bagli;
+    ayni sutunda iki farkli birim olamaz. Emniyet payinin altindaki
+    sabitleme burada reddediliyor - Environment3D onu "harita disinda"
+    diye bildirir ve kullanici sebebi goremez.
+    """
+    if pinned is None:
+        pinned = [None] * len(grounds)
+    if len(pinned) != len(grounds):
+        raise ValueError(f"sabitleme sayisi waypoint sayisiyla uyusmuyor: "
+                         f"{len(pinned)} != {len(grounds)}")
+
+    altitudes = []
+    for index, (ground, agl) in enumerate(zip(grounds, pinned)):
+        if agl is None:
+            altitudes.append(auto_altitude(ground, clearance))
+        elif agl < clearance:
+            raise ValueError(
+                f"{index + 1}. waypoint icin girilen {agl:.0f} m emniyet "
+                f"payinin altinda; en az {clearance:.0f} m olmali")
+        else:
+            altitudes.append(ground + agl)
+    return altitudes
 
 
 def build_env_2d(bounds, constraints: Constraints,

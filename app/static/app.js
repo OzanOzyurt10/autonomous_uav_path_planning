@@ -12,10 +12,12 @@ let terrain = null;        // izgara | null
 let extent = null;         // {x, y, low, ceiling}
 let hasTerrain = false;
 let terrainSource = "yok";  // "yerel" | "indirilen" | "yok"
+let terrainSpacing = null;  // arazi post araligi, metre; pencereyle degisir
 let frameSeconds = 0.5;
 
 let zones = [];            // {lat, lon, radius} yasak bolgeler
-let mode = "2d";           // "2d" | "3d"
+let mode = "3d";           // beklenen mod: "flat" kutusu isaretliyse 2d
+let planMode = null;       // sunucunun fiilen kostugu mod; plan bozulunca null
 let arming = null;         // null | "waypoint" | "zone"
 let drawing = null;        // {lat, lon, px, py} - bolge cizimi suruyor
 let selected = -1;         // secili waypoint; iki gorunumde de ortak
@@ -33,7 +35,11 @@ let draggingScene = false;
 let settleTimer = null;    // kamera hareketi bitince ucagi yerine koy
 let lastPlane3d = 0;       // 3B ucak guncellemesi kisitlaniyor
 
-const DEFAULT_ALT = 300;   // yeni waypointin varsayilan irtifasi
+// Kot girilmiyor, zeminden turetiliyor. Iki sabit de sunucudaki
+// ALTITUDE_MARGIN ve NO_TERRAIN_CRUISE ile AYNI olmak zorunda; ayrisirsa
+// 3B isaretler rotanin altinda ya da ustunde asili kalir.
+const ALT_MARGIN = 100;
+const NO_TERRAIN_CRUISE = 1000;
 const MIN_ZONE_RADIUS = 150;    // altinda bolge cizmek kazadir
 const QUICK_ZONE_RADIUS = 800;  // surukleme yerine tiklandiysa
 
@@ -80,13 +86,31 @@ function toLocal(f, lat, lon) {
 // kaybolmasin, yerlerinde guncellensin.
 function waypointsLocal() {
   if (!frame) return [];
-  const cruise = Number($("cruise").value);
+  const cruise = cruiseAltitude();
   return waypoints.map((w) => {
     const local = toLocal(frame, w.lat, w.lon);
     const ground = elevationAt(local[0], local[1]);
     return [local[0], local[1],
-            mode === "2d" ? cruise : ground + w.alt];
+            activeMode() === "2d"
+              ? cruise
+              : ground + (w.alt === null ? autoAgl() : w.alt)];
   });
+}
+
+// Otomatik kotun zeminden yuksekligi; sabitleme girilmeyen her
+// waypointte bu geciyor. Sunucudaki auto_altitude ile ayni kural.
+function autoAgl() {
+  return Number($("clearance").value) + ALT_MARGIN;
+}
+
+function autoAltitude(ground) {
+  return ground + autoAgl();
+}
+
+// 2B'de tek seyir kotu var: penceredeki en yuksek postun uzerinde.
+// Arazi yoksa zemin bilinmiyor, sabit MSL degerine dusuyoruz.
+function cruiseAltitude() {
+  return terrain ? autoAltitude(terrain.high) : NO_TERRAIN_CRUISE;
 }
 
 // --- Web Mercator: piksel ile enlem/boylam arasi ----------------------
@@ -868,20 +892,26 @@ function hideGuide() {
   $("guide").classList.remove("on");
 }
 
-function setMode(next) {
-  mode = next;
-  setArming(null);
-  $("mode2d").classList.toggle("on", next === "2d");
-  $("mode3d").classList.toggle("on", next === "3d");
-  $("cruiseField").style.display = next === "2d" ? "flex" : "none";
+// Mod artik secilmiyor: arazi varsa 3B, yoksa 2B. Burada yalnizca
+// BEKLENEN mod tutuluyor - sunucu 3B'yi kuramaz ya da bir bacakta
+// takilirsa 2B doner ve gercek mod planMode'a yazilir.
+function syncMode() {
+  mode = $("flat").checked ? "2d" : "3d";
   applyAltitudeLabels();
   renderList();
   invalidatePlan();
 }
 
+// Rota gecerliyken sunucunun FIILEN kostugu mod; 3B gorunum isaretleri
+// buna gore yerlestiriyor, yoksa geri dusulen duz rotanin uzerinde
+// asili kalirlardi.
+function activeMode() {
+  return planMode || mode;
+}
+
 // --- waypoint listesi --------------------------------------------------
 function addWaypoint(lat, lon) {
-  waypoints.push({ lat: lat, lon: lon, alt: DEFAULT_ALT });
+  waypoints.push({ lat: lat, lon: lon, alt: null });   // null = otomatik
   invalidatePlan();
   renderList();
   updateOverlays();
@@ -890,6 +920,7 @@ function addWaypoint(lat, lon) {
 function invalidatePlan() {
   legs = [];
   path = [];
+  planMode = null;          // artik gecerli bir plan yok
   stopPlayback();
   $("scrub").disabled = true;
   $("play").disabled = true;
@@ -907,6 +938,11 @@ function inFailedLeg(index) {
 function renderList() {
   const body = $("wplist");
   body.innerHTML = "";
+  // 2B'de kot tek ve hesaplanmis: salt okunur. 3B'de her waypoint icin
+  // sabitlenebiliyor; bos kutu "otomatik" demek ve placeholder o anda
+  // hangi degerin gecerli oldugunu gosteriyor.
+  const locals = waypointsLocal();
+  const hint = autoAgl().toFixed(0);
   waypoints.forEach((w, index) => {
     const row = document.createElement("tr");
     row.className = (inFailedLeg(index) ? "bad " : "") +
@@ -920,14 +956,19 @@ function renderList() {
       "<td>" + w.lat.toFixed(5) + "</td>" +
       "<td>" + w.lon.toFixed(5) + "</td>" +
       (mode === "2d"
-        ? '<td class="ghost">' + Number($("cruise").value).toFixed(0) + "</td>"
-        : '<td><input type="number" step="50" value="' + w.alt.toFixed(0) +
-          '"></td>') +
+        ? '<td class="ghost">' +
+          (locals.length ? locals[index][2].toFixed(0) : "&ndash;") + "</td>"
+        : '<td><input type="number" step="50" min="0" placeholder="' + hint +
+          '" value="' + (w.alt === null ? "" : w.alt.toFixed(0)) +
+          '" title="bos birak = otomatik"></td>') +
       '<td class="drop"><button title="sil">&times;</button></td>';
     const altInput = row.querySelector('input[type="number"]');
     if (altInput) {
       altInput.addEventListener("change", (event) => {
-        w.alt = Number(event.target.value);
+        const text = event.target.value.trim();
+        // Bosaltmak sabitlemeyi kaldiriyor; bu geri donus yolu olmadan
+        // girilen bir deger kalici olurdu.
+        w.alt = text === "" ? null : Number(text);
         invalidatePlan();
       });
     }
@@ -961,6 +1002,9 @@ function clearStats() {
   setTile("statAgl", DASH, "m");
   setTile("statLegs", DASH, "");
   $("tileAgl").className = "tile";
+  $("timeKey").textContent = "ucus suresi";
+  $("windNote").textContent = "ruzgar yok, sure sakin hava";
+  $("windNote").style.color = "";
 }
 
 function setStatus(text, kind) {
@@ -981,6 +1025,7 @@ async function requestPlan() {
   stopPlayback();
 
   const body = {
+    // Ucuncu eleman sabitleme (AGL); null ise sunucu otomatige dusuyor.
     waypoints: waypoints.map((w) => [w.lat, w.lon, w.alt]),
     speed: Number($("speed").value),
     bank_deg: Number($("bank").value),
@@ -988,8 +1033,9 @@ async function requestPlan() {
     clearance: Number($("clearance").value),
     iterations: Number($("iterations").value),
     seed: Number($("seed").value),
-    mode: mode,
-    cruise: Number($("cruise").value),
+    ignore_terrain: $("flat").checked,
+    wind_speed: Number($("windSpeed").value),
+    wind_from: Number($("windFrom").value),
     zones: zones.map((z) => ({ lat: z.lat, lon: z.lon, radius_m: z.radius })),
     want_terrain: true
   };
@@ -1020,9 +1066,13 @@ async function requestPlan() {
     terrain = data.terrain || null;
     hasTerrain = Boolean(data.has_terrain);
     terrainSource = data.terrain_source || "yok";
+    terrainSpacing = data.terrain_spacing || null;
     applyAltitudeLabels();
   }
 
+  // Gercek modu isaretlerden ONCE oku: waypointsLocal buna bakiyor.
+  planMode = data.mode || null;
+  showPlanKind(data);
   legs = data.legs || [];
   path = data.path || [];
   renderList();
@@ -1040,6 +1090,14 @@ async function requestPlan() {
 
   frameSeconds = data.frame_seconds;
   fillStats(data);
+  // fillStats durumu AGL'ye gore yaziyor; geri dusuldugunu ondan sonra
+  // sesli soylemek gerekiyor, yoksa "rota bulundu" diye okunur.
+  if (data.fell_back) {
+    setStatus("3B rota bulunamadi, ARAZIYI YOK SAYAN 2B rota gosteriliyor: " +
+              "irtifa dogrulanmadi. Emniyet payini artir, waypointleri " +
+              "birbirinden uzaklastir ya da tirmanma acisini yukselt." +
+              sourceNote(), "bad");
+  }
   $("scrub").max = String(path.length - 1);
   $("scrub").value = "0";
   $("scrub").disabled = false;
@@ -1047,23 +1105,88 @@ async function requestPlan() {
   updateClock(0);
 }
 
-// Arazinin nereden geldigi gorunur olmali: indirilen veri 90 m post ve
-// kullanicinin kendi indirdigi karolardan kaba olabilir.
-function sourceNote() {
-  if (terrainSource === "indirilen") {
-    return " Arazi internetten indirildi (90 m post).";
+// Hangi planlayicinin kostugu ve NICIN kostugu gorunur olmali. Mod artik
+// secilmedigi icin bunu soylemezsek kullanici araziden kacinilmayan bir
+// rotayi kacinilmis sanabilir - emniyet meselesi.
+function showPlanKind(data) {
+  const node = $("planKind");
+  if (!node) return;
+  let text, warn = false;
+  if (data.mode === "3d") {
+    text = "3B - araziden ve bolgelerden kacinildi";
+  } else if (data.fell_back) {
+    text = "2B'ye DUSULDU - 3B bacak planlanamadi, arazi yok sayildi";
+    warn = true;
+  } else if (data.forced_2d) {
+    text = "2B - araziyi yok say isaretli";
+    warn = true;
+  } else {
+    text = "2B - arazi verisi yok, irtifa dogrulanmadi";
+    warn = true;
   }
-  if (terrainSource === "yerel") return " Arazi yerel karodan.";
+  node.innerHTML = "plan modu <b>" + text + "</b>";
+  node.style.color = warn ? "var(--warn)" : "";
+}
+
+// Arazinin nereden geldigi VE ne kadar ince oldugu gorunur olmali. Post
+// araligi pencereyle buyuyor; kaba bir izgarada dar bir sirt iki post
+// arasina dusup duzlesir ve emniyet payi o duz zeminden olculur.
+function sourceNote() {
+  const post = terrainSpacing ? " " + terrainSpacing.toFixed(0) + " m post" +
+               (terrainSpacing > 120 ? " - dar sirtlar gorunmeyebilir" : "")
+             : "";
+  if (terrainSource === "indirilen") {
+    return " Arazi internetten indirildi (" + post.trim() + ").";
+  }
+  if (terrainSource === "yerel") return " Arazi yerel karodan (" +
+                                       post.trim() + ").";
   return "";
+}
+
+function clockText(seconds) {
+  return Math.floor(seconds / 60) + '<span class="u">dk</span> ' +
+         String(Math.round(seconds % 60)).padStart(2, "0");
+}
+
+// Sure gostergesinin HANGI sure oldugunu yazmak zorundayiz. Ruzgarli ve
+// sakin hava suresi ayni gorunuyor ama %30 ayrisabiliyor; etiketsiz bir
+// sayi menzil hesabini sessizce yanlislar.
+function showWind(data) {
+  const wind = data.wind || {};
+  const note = $("windNote");
+  const blowing = wind.speed > 0;
+
+  if (blowing && wind.duration !== null && wind.duration !== undefined) {
+    setTile("statTime", clockText(wind.duration), "sn");
+    $("timeKey").textContent = "ucus suresi (ruzgarli)";
+    const loss = wind.duration - data.duration;
+    note.innerHTML = wind.speed.toFixed(0) + " m/s " +
+      wind.from_deg.toFixed(0) + "&deg; yonunden &mdash; yer hizi <b>" +
+      wind.min_speed.toFixed(0) + "-" + wind.max_speed.toFixed(0) +
+      " m/s</b>, sakin havaya gore <b>" + (loss >= 0 ? "+" : "") +
+      Math.round(loss) + " sn</b>";
+    note.style.color = "";
+    return;
+  }
+
+  setTile("statTime", clockText(data.duration), "sn");
+  $("timeKey").textContent = "ucus suresi (sakin)";
+  if (blowing) {
+    // Rota gecerli ama bu ruzgarda UCULAMAZ: yan ruzgar hava hizini
+    // asiyor. Sureyi sakin hava degeriyle gostermek yaniltici olurdu,
+    // o yuzden sebebi yaziyoruz.
+    note.innerHTML = "<b>Bu ruzgarda ucurulamaz:</b> " + wind.message;
+    note.style.color = "var(--route)";
+  } else {
+    note.textContent = "ruzgar yok, sure sakin hava";
+    note.style.color = "";
+  }
 }
 
 function fillStats(data) {
   const clearance = Number($("clearance").value);
   setTile("statLength", (data.cost / 1000).toFixed(2), "km");
-  const minutes = Math.floor(data.duration / 60);
-  const seconds = Math.round(data.duration % 60);
-  setTile("statTime", minutes + '<span class="u">dk</span> ' +
-                      String(seconds).padStart(2, "0"), "sn");
+  showWind(data);
   setTile("statLegs", String(legs.length), "");
 
   if (!data.agl) {
@@ -1081,16 +1204,15 @@ function fillStats(data) {
   const state = aglState(data.agl.min, clearance);
   $("tileAgl").className = "tile " + state;
 
-  // Negatif AGL "paya yakin" degil, rotanin arazinin ICINDEN gectigi
-  // anlamina geliyor. 2B planlamada bu beklenen bir sonuc: yatay rota
-  // araziyi gormuyor. Ayni renkle gecistirilmemeli.
+  // Kot otomatik olduktan sonra negatif AGL iki modda da IMKANSIZ: 2B
+  // seyir kotu pencerenin tepesinin ustunde, 3B'de zaten zemin + pay.
+  // Yine de gorunuyorsa arazi verisiyle plan penceresi uyusmuyor
+  // demektir - sessizce yutulacak bir sey degil.
   if (data.agl.min < 0) {
     setStatus("ROTA ARAZIYE GIRIYOR: en dusuk AGL " +
-              data.agl.min.toFixed(0) + " m. 2B planlama araziden " +
-              "kacinmaz - ya seyir irtifasini en az " +
-              (Number($("cruise").value) - data.agl.min + clearance)
-                .toFixed(0) + " m yap, ya 3B moda gec." + sourceNote(),
-              "bad");
+              data.agl.min.toFixed(0) + " m. Kot otomatik hesaplandigi " +
+              "icin bu olmamaliydi; arazi verisi plan penceresiyle " +
+              "uyusmuyor olabilir." + sourceNote(), "bad");
     return;
   }
   const verdict = state === "good" ? "emniyet payinin rahat ustunde"
@@ -1101,17 +1223,20 @@ function fillStats(data) {
             "." + sourceNote(), state === "bad" ? "bad" : "");
 }
 
-// Etiketin dogru olmasi emniyet meselesi. 2B'de irtifa tek seyir degeri
-// ve MSL; 3B'de waypoint basina ve arazi zemininden (AGL).
+// Sutunun birimi modlar arasinda DEGISIYOR: 2B'de hesaplanmis tek kot
+// (MSL), 3B'de waypoint basina zeminden yukseklik (AGL). Karistirmak
+// emniyet meselesi, o yuzden baslik da metin de birlikte degisiyor.
 function applyAltitudeLabels() {
   if (mode === "2d") {
-    $("altHead").textContent = "seyir m";
+    $("altHead").textContent = "kot m";
     $("altUnit").textContent =
-      "2B: yatay rota, tek seyir irtifasi (deniz seviyesinden).";
+      "2B: tek seyir kotu, penceredeki en yuksek nokta + emniyet payi + " +
+      ALT_MARGIN + " m. Rota yatay, araziden kacinmiyor.";
   } else {
     $("altHead").textContent = "AGL m";
     $("altUnit").textContent =
-      "3B: waypoint basina, arazi zemininden yukseklik.";
+      "3B: zeminden yukseklik. Bos birak = otomatik (emniyet payi + " +
+      ALT_MARGIN + " m); sayi yazarsan o waypoint o kota sabitlenir.";
   }
   $("aglKey").textContent = hasTerrain ? "en dusuk agl" : "agl yok";
 }
@@ -1203,7 +1328,7 @@ async function start() {
   renderZones();
   clearStats();
   setArming(null);
-  setMode("2d");
+  syncMode();
   await setBasemap("sat");
 
   // Plotly map alt grafiginde iz uzerinde olmayan tiklamalar
@@ -1302,9 +1427,8 @@ async function start() {
     if (selected >= 0) select(selected);        // secimi kaldir
   });
 
-  // Secili waypointi ok tuslariyla kaydir, irtifasini +/- ile degistir.
-  // 3B'de zemine tiklamak kamera bir kil donerse yutuluyor; bu yol
-  // her zaman calisiyor ve hassas ayar icin zaten daha iyi.
+  // Secili waypointi ok tuslariyla kaydir. Kot girilmedigi icin dusey
+  // ayar yok; ok tuslari haritada hassas konumlandirma icin duruyor.
   const NUDGE = { ArrowUp: [0, 1], ArrowDown: [0, -1],
                   ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
   window.addEventListener("keydown", (event) => {
@@ -1323,16 +1447,6 @@ async function start() {
       invalidatePlan();
       renderList();
       updateOverlays();
-      return;
-    }
-
-    if (mode === "3d" && (event.key === "+" || event.key === "-"
-                          || event.key === "=")) {
-      event.preventDefault();
-      const delta = (event.key === "-" ? -1 : 1) * (event.shiftKey ? 100 : 25);
-      waypoints[selected].alt = Math.max(0, waypoints[selected].alt + delta);
-      invalidatePlan();
-      renderList();
     }
   });
 
@@ -1344,13 +1458,14 @@ async function start() {
   $("layerTopo").addEventListener("click", () => setBasemap("topo"));
   $("layerOffline").addEventListener("click", () => setBasemap("offline"));
   $("toggle3d").addEventListener("click", toggle3d);
-  $("mode2d").addEventListener("click", () => setMode("2d"));
-  $("mode3d").addEventListener("click", () => setMode("3d"));
+  $("flat").addEventListener("change", syncMode);
   $("addWp").addEventListener("click", () =>
     setArming(arming === "waypoint" ? null : "waypoint"));
   $("addZone").addEventListener("click", () =>
     setArming(arming === "zone" ? null : "zone"));
-  $("cruise").addEventListener("change", () => {
+  // Emniyet payi artik kotu da belirliyor: degistiginde listedeki
+  // hesaplanan degerler ve 3B isaretler yanlis kalmasin.
+  $("clearance").addEventListener("change", () => {
     invalidatePlan();
     renderList();
   });

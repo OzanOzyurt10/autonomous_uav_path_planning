@@ -5,9 +5,10 @@ import math
 
 import pytest
 
-from app.mission import (Constraints, FlatEdge, Zone, agl_profile,
-                         build_env, build_env_2d, geo_window,
-                         plan_mission, plan_mission_2d, sample_mission,
+from app.mission import (ALTITUDE_MARGIN, Constraints, FlatEdge, Zone,
+                         agl_profile, auto_altitude, build_env, build_env_2d,
+                         geo_window, plan_mission, plan_mission_2d,
+                         sample_mission, waypoint_altitudes,
                          waypoint_headings)
 from src.dubins import shortest_path
 from src.environment import Obstacle
@@ -392,3 +393,71 @@ class TestPlanMission2d:
         poses = sample_mission(mission, 50.0)
         gaps = [math.dist(a[:2], b[:2]) for a, b in zip(poses, poses[1:])]
         assert max(gaps) < 55.0
+
+
+class TestAutoAltitude:
+    """Kot artik girilmiyor; kural tek yerde ve olculebilir olmali."""
+
+    def test_altitude_clears_ground_by_clearance_and_margin(self):
+        assert auto_altitude(744.0, 100.0) == 744.0 + 100.0 + ALTITUDE_MARGIN
+
+    def test_altitude_follows_ground(self):
+        # Iki zemin arasindaki fark aynen kota gecmeli: 3B rotanin
+        # araziyi takip etmesinin sarti bu.
+        low = auto_altitude(200.0, 120.0)
+        high = auto_altitude(1400.0, 120.0)
+        assert high - low == pytest.approx(1200.0)
+
+    def test_margin_keeps_point_free_above_terrain(self):
+        # Environment3D zemin + clearance altini yasakliyor; kural bu
+        # esigin ustunde kalmali, yoksa waypoint kendi kotunda gecersiz.
+        heights = array.array("f", [500.0] * 4)
+        terrain = Terrain(heights, 2, 2, 1000.0, 1000.0)
+        env = build_env((0.0, 0.0, 0.0, 1000.0, 1000.0, 3000.0), terrain,
+                        Constraints(28.0, math.radians(30.0),
+                                    math.radians(8.0), 150.0))
+        z = auto_altitude(terrain.elevation_at(500.0, 500.0), 150.0)
+        assert env.is_free((500.0, 500.0, z))
+        assert not env.is_free((500.0, 500.0, z - ALTITUDE_MARGIN - 1.0))
+
+
+class TestWaypointAltitudes:
+    """Sabitleme istege bagli: bos birakilan waypoint otomatige dusuyor."""
+
+    GROUNDS = [200.0, 1400.0, 800.0]
+
+    def test_no_pins_falls_back_to_auto(self):
+        assert waypoint_altitudes(self.GROUNDS, 100.0) == [
+            auto_altitude(g, 100.0) for g in self.GROUNDS]
+
+    def test_pin_is_measured_from_ground(self):
+        # Sabitleme AGL: ayni sayi farkli zeminlerde farkli MSL kotu.
+        got = waypoint_altitudes(self.GROUNDS, 100.0, [300.0, 300.0, None])
+        assert got[0] == 500.0 and got[1] == 1700.0
+        assert got[2] == auto_altitude(800.0, 100.0)
+
+    def test_pin_below_clearance_is_refused_with_index(self):
+        with pytest.raises(ValueError) as caught:
+            waypoint_altitudes(self.GROUNDS, 150.0, [None, 90.0, None])
+        # Kacinci waypoint ve gereken en az deger mesajda olmali; yoksa
+        # kullanici hangi satiri duzeltecegini bilemez.
+        assert "2." in str(caught.value) and "150" in str(caught.value)
+
+    def test_pin_equal_to_clearance_is_accepted(self):
+        assert waypoint_altitudes([500.0], 100.0, [100.0]) == [600.0]
+
+    def test_length_mismatch_is_refused(self):
+        with pytest.raises(ValueError, match="uyusmuyor"):
+            waypoint_altitudes(self.GROUNDS, 100.0, [300.0])
+
+    def test_pinned_waypoint_stays_free_in_environment(self):
+        # Sinir deger: tam emniyet payinda sabitlenen nokta gecerli
+        # sayilmali, bir metre altisi sayilmamali.
+        heights = array.array("f", [500.0] * 4)
+        terrain = Terrain(heights, 2, 2, 1000.0, 1000.0)
+        env = build_env((0.0, 0.0, 0.0, 1000.0, 1000.0, 3000.0), terrain,
+                        Constraints(28.0, math.radians(30.0),
+                                    math.radians(8.0), 120.0))
+        z = waypoint_altitudes([500.0], 120.0, [120.0])[0]
+        assert env.is_free((500.0, 500.0, z))
+        assert not env.is_free((500.0, 500.0, z - 1.0))

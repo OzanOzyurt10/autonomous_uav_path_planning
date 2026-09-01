@@ -35,7 +35,9 @@ DEFAULT_URL = ("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/"
 EQUATOR_RESOLUTION = 2 * math.pi * 6378137.0 / TILE_SIZE
 
 MIN_ZOOM, MAX_ZOOM = 6, 14
-MAX_TILES = 64                 # 60 km pencere zoom 12'de ~50 karo
+# Cagiran taraf post araligini pencereye gore secmeli: sabit 90 m'de
+# 120 km'lik pencere 90 karo ister ve burada reddedilir.
+MAX_TILES = 64                 # 100 km pencere zoom 10'da ~25 karo
 TIMEOUT = 20.0
 # Karo basina ~1 saniye; 36 karolu bir pencere sirayla yarim dakika surer.
 # Is agi beklemek oldugu icin is parcaciklari GIL'e takilmiyor.
