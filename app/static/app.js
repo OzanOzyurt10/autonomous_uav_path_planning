@@ -18,6 +18,7 @@ let frameSeconds = 0.5;
 let zones = [];            // {lat, lon, radius} yasak bolgeler
 let mode = "3d";           // beklenen mod: "flat" kutusu isaretliyse 2d
 let planMode = null;       // sunucunun fiilen kostugu mod; plan bozulunca null
+let missionFile = null;    // {text, points, deviation, tolerance} | null
 let arming = null;         // null | "waypoint" | "zone"
 let drawing = null;        // {lat, lon, px, py} - bolge cizimi suruyor
 let selected = -1;         // secili waypoint; iki gorunumde de ortak
@@ -921,6 +922,8 @@ function invalidatePlan() {
   legs = [];
   path = [];
   planMode = null;          // artik gecerli bir plan yok
+  missionFile = null;
+  $("export").disabled = true;
   stopPlayback();
   $("scrub").disabled = true;
   $("play").disabled = true;
@@ -1018,6 +1021,25 @@ function aglState(minAgl, clearance) {
   return "good";
 }
 
+// Dosyayi sunucudan tekrar istemiyoruz: metin plan yanitinda geldi ve
+// rota degisince zaten gecersizlesiyor. Boylece indirilen sey ekranda
+// duran rotanin ta kendisi, arada yeniden planlama riski yok.
+function downloadMission() {
+  if (!missionFile || !missionFile.text) return;
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  const blob = new Blob([missionFile.text], { type: "text/plain" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "gorev_" + stamp + ".waypoints";
+  link.click();
+  URL.revokeObjectURL(link.href);
+  setStatus("Gorev dosyasi indirildi: " + missionFile.points +
+            " nokta, rotadan en fazla " +
+            missionFile.deviation.toFixed(1) + " m sapma (tolerans " +
+            missionFile.tolerance.toFixed(0) + " m). Irtifalar MUTLAK " +
+            "(MSL). Ilk satir kalkis.", "");
+}
+
 // --- planlama ----------------------------------------------------------
 async function requestPlan() {
   setStatus("planlaniyor...");
@@ -1072,6 +1094,8 @@ async function requestPlan() {
 
   // Gercek modu isaretlerden ONCE oku: waypointsLocal buna bakiyor.
   planMode = data.mode || null;
+  missionFile = data.mission_file || null;
+  $("export").disabled = !(missionFile && missionFile.text);
   showPlanKind(data);
   legs = data.legs || [];
   path = data.path || [];
@@ -1470,6 +1494,7 @@ async function start() {
     renderList();
   });
 
+  $("export").addEventListener("click", downloadMission);
   $("plan").addEventListener("click", requestPlan);
   $("play").addEventListener("click", togglePlayback);
   $("scrub").addEventListener("input", (event) => {

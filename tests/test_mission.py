@@ -10,7 +10,10 @@ from app.mission import (ALTITUDE_MARGIN, Constraints, FlatEdge, Zone,
                          geo_window, plan_mission, plan_mission_2d,
                          sample_mission, waypoint_altitudes,
                          waypoint_headings)
+from app.mission import wind_cost
 from src.dubins import shortest_path
+from src.rrt_star import LENGTH
+from src.wind import wind_vector
 from src.environment import Obstacle
 from src.environment3d import Cylinder
 from src.geo import METRES_PER_DEGREE, Frame
@@ -461,3 +464,73 @@ class TestWaypointAltitudes:
         z = waypoint_altitudes([500.0], 120.0, [120.0])[0]
         assert env.is_free((500.0, 500.0, z))
         assert not env.is_free((500.0, 500.0, z - 1.0))
+
+
+RHO = 140.0
+
+
+def _edge3d(start, goal, altitude=1000.0):
+    """Sabit irtifada 3B bicimli kenar: sample() (x, y, z, yaw) veriyor."""
+    return FlatEdge(shortest_path(start, goal, RHO), altitude)
+
+
+class TestWindCost:
+    """Planlayicinin ruzgar altinda SUREYI kucultmesi icin maliyet modeli."""
+
+    AIRSPEED = 28.0
+    EDGE = None
+
+    def setup_method(self):
+        self.EDGE = _edge3d((0.0, 0.0, 0.0), (3000.0, 0.0, 0.0))
+
+    def test_calm_cost_is_length_over_airspeed(self):
+        model = wind_cost(self.AIRSPEED, (0.0, 0.0), 50.0)
+        assert model.of_edge(self.EDGE) == pytest.approx(
+            self.EDGE.length / self.AIRSPEED, rel=1e-3)
+
+    def test_tailwind_is_cheaper_headwind_is_dearer(self):
+        calm = wind_cost(self.AIRSPEED, (0.0, 0.0), 50.0)
+        tail = wind_cost(self.AIRSPEED, (8.0, 0.0), 50.0)     # doguya
+        head = wind_cost(self.AIRSPEED, (-8.0, 0.0), 50.0)
+        assert tail.of_edge(self.EDGE) < calm.of_edge(self.EDGE)
+        assert head.of_edge(self.EDGE) > calm.of_edge(self.EDGE)
+
+    def test_lower_bound_is_distance_over_fastest_ground_speed(self):
+        model = wind_cost(self.AIRSPEED, wind_vector(8.0, 270.0), 50.0)
+        assert model.lower_bound(3600.0) == pytest.approx(
+            3600.0 / (self.AIRSPEED + 8.0))
+
+    def test_lower_bound_never_exceeds_the_real_cost(self):
+        # KRITIK OZELLIK. Budama alt sinira guveniyor: alt sinir gercek
+        # maliyeti asarsa iyi adaylar sessizce elenir, planlayici kotu
+        # rota dondurur ve hicbir sey hata vermez.
+        model = wind_cost(self.AIRSPEED, wind_vector(9.0, 40.0), 50.0)
+        goals = [(3000.0, 0.0, 0.0), (0.0, 2500.0, math.pi / 2),
+                 (-1800.0, 1200.0, math.pi), (2200.0, -2600.0, -math.pi / 3),
+                 (600.0, 400.0, 1.0)]
+        for goal in goals:
+            edge = _edge3d((0.0, 0.0, 0.0), goal)
+            span = math.dist((0.0, 0.0), goal[:2])
+            assert model.lower_bound(span) <= model.of_edge(edge) + 1e-9
+
+    def test_unflyable_edge_costs_infinity_not_an_exception(self):
+        # Yan ruzgar hava hizini asarsa flight_time ValueError atiyor.
+        # Planlayicinin icinde bu butun plani cokertir; o kenar yalnizca
+        # KULLANILAMAZ, maliyeti sonsuz.
+        model = wind_cost(10.0, (0.0, 25.0), 50.0)
+        assert model.of_edge(self.EDGE) == math.inf
+
+    def test_flat_edges_do_not_read_yaw_as_altitude(self):
+        # 2B Dubins kenarinin sample()'i (x, y, yaw) veriyor - ucuncu alan
+        # IRTIFA DEGIL. Duz kabul edilmezse yaw tirmanma acisi sanilir ve
+        # sure sessizce yanlis cikar.
+        flat_path = shortest_path((0.0, 0.0, 0.0), (500.0, 500.0,
+                                                    math.pi / 2), RHO)
+        model = wind_cost(self.AIRSPEED, (0.0, 0.0), 25.0, flat=True)
+        assert model.of_edge(flat_path) == pytest.approx(
+            flat_path.length / self.AIRSPEED, rel=1e-3)
+
+    def test_default_model_is_untouched(self):
+        # Ruzgarsiz plan bugunku davranisini korumali.
+        assert LENGTH.of_edge(self.EDGE) == pytest.approx(self.EDGE.length)
+        assert LENGTH.lower_bound(1234.0) == 1234.0

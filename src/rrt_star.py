@@ -18,6 +18,29 @@ Pose = tuple[float, float, float]
 
 
 @dataclass(frozen=True)
+class CostModel:
+    """Planlayicinin neyi kucultmeye calistigi.
+
+    Planlayici artik "metre" bilmiyor, yalnizca maliyet biliyor. Ruzgarli
+    planlama demek, buraya sureyi donduren bir model gecirmek demek;
+    shortcut da AYNI modeli aliyor, boylece ikisinin farkli seyi optimize
+    etmesi imkansiz.
+    """
+
+    of_edge: object                # kenar -> maliyet
+    # Oklid mesafesini o mesafenin MUMKUN EN DUSUK maliyetine cevirir.
+    # Budama buna dayaniyor: alt sinir bile eldekini gecmiyorsa aday kesin
+    # kaybeder. Gercek maliyetten buyuk donerse iyi adaylar sessizce elenir.
+    lower_bound: object
+
+
+# Varsayilan: maliyet = kenar uzunlugu. Dubins yolu duz cizgiden kisa
+# olamayacagi icin alt sinir mesafenin kendisi.
+LENGTH = CostModel(of_edge=lambda edge: edge.length,
+                   lower_bound=lambda distance: distance)
+
+
+@dataclass(frozen=True)
 class Node:
     """Agactaki bir poz ve oraya nereden gelindigi.
 
@@ -150,22 +173,24 @@ def _neighbours(nodes: list[Node], pose: Pose, radius: float) -> list[int]:
 
 def _choose_parent(env: Environment, nodes: list[Node], pose: Pose,
                    candidates: list[int], rho: float, step: float,
-                   fallback: tuple[int, DubinsPath]) -> tuple[int, DubinsPath]:
+                   fallback: tuple[int, DubinsPath],
+                   model: CostModel = LENGTH) -> tuple[int, DubinsPath]:
     """Adaylar arasindan poza en ucuza ulastirani secer, (indeks, kenar) doner."""
     best_index, best_edge = fallback
-    best_cost = nodes[best_index].cost + best_edge.length
+    best_cost = nodes[best_index].cost + model.of_edge(best_edge)
     for j in candidates:
         edge = _try_connect(env, nodes[j].pose, pose, rho, step)
         if edge is None:
             continue
-        cost = nodes[j].cost + edge.length
+        cost = nodes[j].cost + model.of_edge(edge)
         if cost < best_cost:
             best_index = j
             best_edge = edge
             best_cost = cost
     return best_index, best_edge
 
-def _propagate_cost(nodes: list[Node], index: int) -> None:
+def _propagate_cost(nodes: list[Node], index: int,
+                    model: CostModel = LENGTH) -> None:
     """index'in altindaki alt agacin maliyetlerini gunceller; listeyi yerinde degistirir.
 
     Node frozen oldugu icin dugumun yerine dataclasses.replace ile yenisi konur.
@@ -177,11 +202,14 @@ def _propagate_cost(nodes: list[Node], index: int) -> None:
         for c in range(len(nodes)):
             if nodes[c].parent != i:
                 continue
-            nodes[c] = dataclasses.replace(nodes[c], cost=nodes[i].cost + nodes[c].path_from_parent.length)
+            nodes[c] = dataclasses.replace(
+                nodes[c],
+                cost=nodes[i].cost + model.of_edge(nodes[c].path_from_parent))
             queue.append(c)
 
 def _rewire(env: Environment, nodes: list[Node], new_index: int,
-            candidates: list[int], rho: float, step: float) -> None:
+            candidates: list[int], rho: float, step: float,
+            model: CostModel = LENGTH) -> None:
     """Yeni dugum uzerinden gecmek ucuzlatiyorsa komsulari ona baglar.
 
     Yon _choose_parent'in tersi: kenar yeni dugumden adaya kurulur, cunku
@@ -194,11 +222,13 @@ def _rewire(env: Environment, nodes: list[Node], new_index: int,
         new_edge = _try_connect(env, nodes[new_index].pose, nodes[j].pose, rho, step)
         if new_edge is None:
             continue
-        new_cost = nodes[new_index].cost + new_edge.length
+        new_cost = nodes[new_index].cost + model.of_edge(new_edge)
         if new_cost >= nodes[j].cost:
             continue
-        nodes[j] = dataclasses.replace(nodes[j], parent=new_index, cost=new_cost, path_from_parent=new_edge)
-        _propagate_cost(nodes, j)
+        nodes[j] = dataclasses.replace(nodes[j], parent=new_index,
+                                       cost=new_cost,
+                                       path_from_parent=new_edge)
+        _propagate_cost(nodes, j, model)
 
 
 def plan(start: Pose, goal: Pose, env: Environment, rho: float,
@@ -207,7 +237,8 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
          stop_on_first_solution: bool = False,
          max_edge_length: float | None = None,
          radius_gamma: float | None = None,
-         radius_cap: float | None = None) -> RRTResult:
+         radius_cap: float | None = None,
+         model: CostModel = LENGTH) -> RRTResult:
     """start'tan goal'a carpismasiz bir Dubins rotasi arar (RRT*).
 
     Her yinelemede bir poz orneklenir, en yakin dugumden oraya kenar kurulur,
@@ -259,10 +290,11 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
         # en iyi komsu araniyor
         radius = _neighbour_radius(len(nodes), radius_gamma, radius_cap)
         cands = _neighbours(nodes, target, radius)
-        i, edge = _choose_parent(env, nodes, target, cands, rho, step, (i, edge))
+        i, edge = _choose_parent(env, nodes, target, cands, rho, step,
+                                 (i, edge), model)
 
-        nodes.append(Node(target, i, nodes[i].cost + edge.length, edge))
-        _rewire(env, nodes, len(nodes) - 1, cands, rho, step)
+        nodes.append(Node(target, i, nodes[i].cost + model.of_edge(edge), edge))
+        _rewire(env, nodes, len(nodes) - 1, cands, rho, step, model)
 
         goal_edge = _try_connect(env, target, goal, rho, step)
         if goal_edge is None:
@@ -271,22 +303,24 @@ def plan(start: Pose, goal: Pose, env: Environment, rho: float,
         goal_links.append((len(nodes) - 1, goal_edge))
         if stop_on_first_solution:
             edges = _extract_path(nodes, len(nodes) - 1, goal_edge)
-            cost = nodes[-1].cost + goal_edge.length
+            cost = nodes[-1].cost + model.of_edge(goal_edge)
             return RRTResult(True, edges, cost, iteration, nodes)
 
     if not goal_links:
         return RRTResult(False, [], math.inf, max_iterations, nodes)
 
-    index, goal_edge = min(goal_links,
-                           key=lambda link: nodes[link[0]].cost + link[1].length)
+    index, goal_edge = min(
+        goal_links,
+        key=lambda link: nodes[link[0]].cost + model.of_edge(link[1]))
     edges = _extract_path(nodes, index, goal_edge)
-    cost = nodes[index].cost + goal_edge.length
+    cost = nodes[index].cost + model.of_edge(goal_edge)
     return RRTResult(True, edges, cost, max_iterations, nodes)
 
 
 
 
-def shortcut_with(edges, connect, max_rounds: int = 10):
+def shortcut_with(edges, connect, max_rounds: int = 10,
+                  model: CostModel = LENGTH):
     """Rotadaki gereksiz duraklari atarak kisaltir; girdi listesi degismez.
 
     Ardisik olmayan iki pozu dogrudan baglamayi dener, bag gecerliyse ve
@@ -317,8 +351,8 @@ def shortcut_with(edges, connect, max_rounds: int = 10):
             while j >= i + 2:
                 new_edge = connect(poses[i], poses[j])
                 if (new_edge is not None
-                        and new_edge.length < sum(e.length
-                                                  for e in edges[i:j])):
+                        and model.of_edge(new_edge) < sum(
+                            model.of_edge(e) for e in edges[i:j])):
                     edges[i:j] = [new_edge]
                     del poses[i + 1:j]
                     changed = True
@@ -331,7 +365,9 @@ def shortcut_with(edges, connect, max_rounds: int = 10):
 
 
 def shortcut(edges: list[DubinsPath], env: Environment, rho: float,
-             step: float, max_rounds: int = 10) -> list[DubinsPath]:
+             step: float, max_rounds: int = 10,
+             model: CostModel = LENGTH) -> list[DubinsPath]:
     """shortcut_with'in 2B kolayligi; baglantiyi ortamdan kuruyor."""
     return shortcut_with(
-        edges, lambda a, b: _try_connect(env, a, b, rho, step), max_rounds)
+        edges, lambda a, b: _try_connect(env, a, b, rho, step), max_rounds,
+        model)

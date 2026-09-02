@@ -26,7 +26,8 @@ from app.mission import (Constraints, Zone, agl_profile, auto_altitude,
 from src.geo import Frame
 from src.terrain import MissingTiles, TileStore, tile_name
 from src.terrarium import ElevationUnavailable, TerrariumSource
-from src.wind import flight_time, ground_speeds, wind_vector
+from src.wind import flight_time, ground_speeds, wind_vector 
+from src.wpl import deviation, mission_text, simplify
 
 # .geojson standart tabloda yok; olmazsa octet-stream gider ve calisir,
 # ama dogru tipi vermek tarayici tarafinda surpriz birakmiyor.
@@ -60,6 +61,11 @@ MAX_WAYPOINTS = 12             # her bacak ayri bir RRT* kosusu
 # yeri olsun. Donus yaricapiyla da buyuyor, dar pencerede Dubins sikisiyor.
 WINDOW_MARGIN = 2000.0
 MAX_ZONES = 24
+# Gorev dosyasi seyreltmesi: birakilan cizgi rotadan en fazla bu kadar
+# sapiyor. Olculdu - 26 km'lik bir rotada 5 m tolerans 1894 pozu 16
+# noktaya indiriyor, olculen sapma 4.2 m. Dubins rotasi cogunlukla duz
+# oldugu icin siki tolerans bile bedava.
+WPL_TOLERANCE = 5.0
 # Seyir kotu artik girilmiyor, zeminden turetiliyor. Bu deger yalnizca
 # arazi verisi hic yokken kullaniliyor: zemin bilinmedigi icin MSL.
 NO_TERRAIN_CRUISE = 1000.0
@@ -367,6 +373,10 @@ def plan_payload(body):
     wind = _wind_payload(poses, constraints.speed,
                          float(body.get("wind_speed", 0.0)),
                          float(body.get("wind_from", 0.0)))
+    # Gorev dosyasi yukun icinde gidiyor: ayri uc nokta acmak sunucuda
+    # plan saklamayi gerektirirdi. Seyreltilmis dosya birkac KB.
+    mission_file = (_mission_payload(poses, frame, terrain)
+                    if mission.found else None)
     failed = [index + 1 for index, leg in enumerate(mission.legs)
               if not leg.found]
 
@@ -383,6 +393,7 @@ def plan_payload(body):
         # ruzgar altinda. Arayuz hangisini gosterdigini yazmak zorunda.
         "duration": mission.duration if mission.found else None,
         "wind": wind,
+        "mission_file": mission_file,
         "frame_seconds": FRAME_SECONDS,
         # Arayuz yerel metreyi enlem/boylama kendi ceviriyor; rotayi iki
         # kez gondermek yukun yarisini bosa harcardi.
@@ -442,6 +453,35 @@ def _wind_payload(poses, airspeed, speed, from_deg):
         payload["min_speed"] = min(speeds)
         payload["max_speed"] = max(speeds)
     return payload
+
+
+def _mission_payload(poses, frame, terrain):
+    """Yogun rotayi otopilotun yukleyebilecegi gorev dosyasina cevirir.
+
+    Home kotu ZEMIN olmali, ucus kotu degil: home kalkis noktasi. Arazi
+    yoksa ilk waypointin kotu kaliyor ve dosya yine yuklenir, yalnizca
+    home irtifasi otopilotun kendi olcumune birakilmis olur.
+    """
+    if not poses:
+        return {"text": "", "points": 0, "deviation": None,
+                "tolerance": WPL_TOLERANCE}
+
+    kept = simplify(poses, WPL_TOLERANCE)
+    waypoints = []
+    for index in kept:
+        x, y, z = poses[index][0], poses[index][1], poses[index][2]
+        lat, lon = frame.to_geo(x, y)
+        waypoints.append((lat, lon, z))
+
+    home = waypoints[0]
+    if terrain is not None:
+        ground = terrain.elevation_at(poses[kept[0]][0], poses[kept[0]][1])
+        home = (home[0], home[1], ground)
+
+    return {"text": mission_text(waypoints, home=home),
+            "points": len(waypoints),
+            "deviation": deviation(poses, kept),
+            "tolerance": WPL_TOLERANCE}
 
 
 def _zones_from(body, frame, bounds):

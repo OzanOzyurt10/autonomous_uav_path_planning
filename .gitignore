@@ -7,3 +7,4 @@ __pycache__/
 rapor
 results/*.html
 data
+gorev_ornek.waypoints

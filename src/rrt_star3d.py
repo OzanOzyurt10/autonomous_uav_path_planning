@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from src.dubins3d import DubinsPath3D, airplane_length, airplane_path
 from src.environment3d import Bounds3, Environment3D
-from src.rrt_star import shortcut_with
+from src.rrt_star import LENGTH, CostModel, shortcut_with
 
 Pose3 = tuple[float,float,float,float]
 
@@ -146,10 +146,11 @@ def _choose_parent(env: Environment3D, nodes: list[Node3], pose: Pose3,
                    candidates: list[int], rho: float, gamma_max: float,
                    step: float,
                    fallback: tuple[int, DubinsPath3D],
-                   refine_steps: int = 0) -> tuple[int, DubinsPath3D]:
+                   refine_steps: int = 0,
+                   model: CostModel = LENGTH) -> tuple[int, DubinsPath3D]:
 
     best_index , best_edge = fallback
-    best_cost = nodes[best_index].cost + best_edge.length
+    best_cost = nodes[best_index].cost + model.of_edge(best_edge)
     for j in candidates:
         # OPTIMIZASYON - Oklid alt siniri ile budama.
         # Gercek maliyet nodes[j].cost + d(j -> pose); Dubins mesafesi asla
@@ -157,20 +158,23 @@ def _choose_parent(env: Environment3D, nodes: list[Node3], pose: Pose3,
         # bile best_cost'u gecmiyorsa aday kesin kaybeder; pahali _try_connect
         # (Dubins cozumu + ornekleme + carpisma kontrolu) hic cagrilmiyor.
         # Sonuc degismiyor, yalnizca gereksiz hesap atlaniyor.
-        if not nodes[j].cost + _euclid(nodes[j].pose, pose) < best_cost:
-            continue    
+        if not (nodes[j].cost
+                + model.lower_bound(_euclid(nodes[j].pose, pose))
+                < best_cost):
+            continue
         edge = _try_connect(env, nodes[j].pose, pose, rho, gamma_max, step,
                             refine_steps)
         if edge is None:
             continue
-        if edge.length + nodes[j].cost < best_cost:
-            best_cost = edge.length + nodes[j].cost
+        if model.of_edge(edge) + nodes[j].cost < best_cost:
+            best_cost = model.of_edge(edge) + nodes[j].cost
             best_edge = edge
             best_index = j
     return (best_index,best_edge)
 
 
-def _propagate_cost(nodes: list[Node3], index: int) -> None:
+def _propagate_cost(nodes: list[Node3], index: int,
+                    model: CostModel = LENGTH) -> None:
     """index'in altindaki alt agacin maliyetlerini gunceller; listeyi yerinde degistirir.
 
     Node frozen oldugu icin dugumun yerine dataclasses.replace ile yenisi konur.
@@ -182,29 +186,36 @@ def _propagate_cost(nodes: list[Node3], index: int) -> None:
         for c in range(len(nodes)):
             if nodes[c].parent != i:
                 continue
-            nodes[c] = dataclasses.replace(nodes[c], cost=nodes[i].cost + nodes[c].path_from_parent.length)
+            nodes[c] = dataclasses.replace(
+                nodes[c],
+                cost=nodes[i].cost + model.of_edge(nodes[c].path_from_parent))
             queue.append(c)
 
 def _rewire(env: Environment3D, nodes: list[Node3], new_index: int,
             candidates: list[int], rho: float, gamma_max: float,
-            step: float, refine_steps: int = 0) -> None:
+            step: float, refine_steps: int = 0,
+            model: CostModel = LENGTH) -> None:
     for j in candidates:
         if j == new_index:
             continue
         # OPTIMIZASYON - Oklid alt siniri ile budama (yon _choose_parent'in
         # tersi: yeni dugumden adaya). Alt sinir bile adayin mevcut cost'unu
         # iyilestirmiyorsa yeniden baglama imkansiz; _try_connect atlaniyor.
-        if not (nodes[new_index].cost+ _euclid(nodes[new_index].pose, nodes[j].pose) < nodes[j].cost):
+        if not (nodes[new_index].cost
+                + model.lower_bound(
+                    _euclid(nodes[new_index].pose, nodes[j].pose))
+                < nodes[j].cost):
             continue
         edge = _try_connect(env, nodes[new_index].pose, nodes[j].pose, rho,
                             gamma_max, step, refine_steps)
         if edge is None:
             continue
-        cost = edge.length + nodes[new_index].cost
+        cost = model.of_edge(edge) + nodes[new_index].cost
         if cost >= nodes[j].cost:
             continue
-        nodes[j]=dataclasses.replace(nodes[j], parent=new_index, cost=cost, path_from_parent=edge) 
-        _propagate_cost(nodes,j)
+        nodes[j] = dataclasses.replace(nodes[j], parent=new_index, cost=cost,
+                                       path_from_parent=edge)
+        _propagate_cost(nodes, j, model)
     
     
 def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
@@ -215,7 +226,8 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
            stop_on_first_solution: bool = False,
            radius_gamma: float | None = None,
            radius_cap: float | None = None,
-           refine_steps: int = 0) -> RRTResult3:
+           refine_steps: int = 0,
+           model: CostModel = LENGTH) -> RRTResult3:
     """start'tan goal'a carpismasiz bir Dubins airplane rotasi arar (3B RRT*).
     """
     if rho <= 0.0:
@@ -272,11 +284,12 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
         radius = _neighbour_radius(len(nodes), radius_gamma, radius_cap)
         cands = _neighbours(nodes, target, radius)
         i, edge = _choose_parent(env, nodes, target, cands, rho, gamma_max,
-                                 step, (i, edge), refine_steps)
+                                 step, (i, edge), refine_steps, model)
 
-        nodes.append(Node3(target, i, nodes[i].cost + edge.length, edge))
+        nodes.append(Node3(target, i, nodes[i].cost + model.of_edge(edge),
+                           edge))
         _rewire(env, nodes, len(nodes) - 1, cands, rho, gamma_max, step,
-                refine_steps)
+                refine_steps, model)
 
         goal_edge = _try_connect(env, target, goal, rho, gamma_max, step,
                                  refine_steps)
@@ -286,21 +299,24 @@ def plan3d(start: Pose3, goal: Pose3, env: Environment3D, rho: float,
         goal_links.append((len(nodes) - 1, goal_edge))
         if stop_on_first_solution:
             edges = _extract_path(nodes, len(nodes) - 1, goal_edge)
-            cost = nodes[-1].cost + goal_edge.length
+            cost = nodes[-1].cost + model.of_edge(goal_edge)
             return RRTResult3(True, edges, cost, iteration, nodes)
 
     if not goal_links:
         return RRTResult3(False, [], math.inf, max_iterations, nodes)
 
-    index, goal_edge = min(goal_links,key=lambda link: nodes[link[0]].cost + link[1].length)
+    index, goal_edge = min(
+        goal_links,
+        key=lambda link: nodes[link[0]].cost + model.of_edge(link[1]))
     edges = _extract_path(nodes, index, goal_edge)
-    cost = nodes[index].cost + goal_edge.length
+    cost = nodes[index].cost + model.of_edge(goal_edge)
     return RRTResult3(True, edges, cost, max_iterations, nodes)
 
 
 def shortcut(edges: list[DubinsPath3D], env: Environment3D, rho: float,
              gamma_max: float, step: float, refine_steps: int = 0,
-             max_rounds: int = 10) -> list[DubinsPath3D]:
+             max_rounds: int = 10,
+             model: CostModel = LENGTH) -> list[DubinsPath3D]:
     """shortcut_with'in 3B kolayligi; baglantiyi ortamdan kuruyor.
 
     Algoritma 2B ile ortak: tek kopya olsun diye rrt_star.shortcut_with'te
@@ -310,4 +326,4 @@ def shortcut(edges: list[DubinsPath3D], env: Environment3D, rho: float,
         edges,
         lambda a, b: _try_connect(env, a, b, rho, gamma_max, step,
                                   refine_steps),
-        max_rounds)
+        max_rounds, model)

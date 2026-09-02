@@ -273,6 +273,9 @@
 
   <span class="spacer"></span>
   <button id="toggle3d">3B panel</button>
+  <button id="export" disabled
+          title="ArduPilot / Mission Planner gorev dosyasi (.waypoints)"
+          >Gorev dosyasi</button>
   <button id="clear">Temizle</button>
   <button id="plan" class="go" disabled>Rotayi planla</button>
 </header>
@@ -282,7 +285,7 @@
     <section class="block">
       <h2>Ucak</h2>
       <div class="fields">
-        <div class="field"><label>hiz m/s</label>
+        <div class="field"><label>hiz (Gerçek Hava Hizi ) m/s</label>
           <input id="speed" type="number" value="28" min="5" max="120" step="1"></div>
         <div class="field"><label>yatis&deg;</label>
           <input id="bank" type="number" value="30" min="5" max="60" step="1"></div>

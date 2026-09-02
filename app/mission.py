@@ -16,10 +16,12 @@ from src.dubins3d import DubinsPath3D
 from src.environment import Environment, Obstacle
 from src.environment3d import Cylinder, Environment3D
 from src.geo import METRES_PER_DEGREE, Frame
-from src.rrt_star import plan as plan2d
+from src.rrt_star import plan as plan2d 
 from src.rrt_star import shortcut as shortcut2d
+from src.rrt_star import CostModel
 from src.rrt_star3d import plan3d, shortcut
 from src.terrain import Terrain
+from src.wind import flight_time
 import random
 
 GRAVITY = 9.80665
@@ -33,8 +35,10 @@ Pose3 = tuple[float, float, float, float]
 class Constraints:
     """Ucak kartindan doldurulan kisitlar; rho bunlardan turetiliyor."""
 
-    # Seyir HAVA hizi, m/s. Ruzgar girildiginde yer hizi bundan ayrisiyor
-    # (src/wind.py); rho hesabi hava hizini istedigi icin dogru olan bu.
+    # GERCEK hava hizi (TAS), m/s - gosterge hava hizi DEGIL. Ikisi
+    # yogunlukla ayrisiyor: 850 m'de gercek hiz gostergenin %4 ustunde ve
+    # SITL dogrulamasinda tum sapmanin sebebi buydu (bkz. rapor 25).
+    # rho da bunu istiyor, ruzgar ucgeni de.
     speed: float
     max_bank: float               # azami yatis acisi, radyan
     max_climb: float              # azami tirmanma/alcalma acisi, radyan
@@ -370,3 +374,35 @@ def agl_profile(poses, terrain: Terrain | None):
     if terrain is None:
         return []
     return [pose[2] - terrain.elevation_at(pose[0], pose[1]) for pose in poses]
+
+def wind_cost(airspeed: float, wind, step: float,
+              flat: bool = False) -> CostModel:
+    """Ruzgar altinda SUREYI kucultmek icin maliyet modeli.
+
+    Planlayici bunu alinca mesafe yerine sure minimize ediyor: kuyruk
+    ruzgarindan yararlanmak icin dolasmak, kisa ama karsi ruzgarli bir
+    rotaya tercih edilebilir hale geliyor. shortcut da ayni modeli alarak
+    ayni seyi kisaltiyor.
+    """
+    # Ulasilabilecek en yuksek yer hizi; alt sinir bunun uzerine kuruluyor.
+    fastest = airspeed + math.hypot(wind[0], wind[1])
+
+    def of_edge(edge):
+        poses = edge.sample(step)
+        # 2B kenarin ucuncu alani YAW, irtifa degil. Duz kabul edip sifir
+        # koymazsak flight_time onu tirmanma acisi sanar ve sure sessizce
+        # yanlis cikar.
+        if flat:
+            poses = [(pose[0], pose[1], 0.0) for pose in poses]
+        try:
+            return flight_time(poses, airspeed, wind)
+        except ValueError:
+            # Yan ruzgar hava hizini asiyor: kenar hatali degil, UCULAMAZ.
+            return math.inf
+
+    def lower_bound(distance):
+        # Iki iyimser varsayim ust uste: yol tam duz VE ruzgar tam arkadan.
+        # Gercek maliyet bundan kucuk olamaz - budamanin gecerliligi buna
+        return distance / fastest
+
+    return CostModel(of_edge=of_edge, lower_bound=lower_bound)
