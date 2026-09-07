@@ -26,6 +26,9 @@ import random
 
 GRAVITY = 9.80665
 ALTITUDE_MARGIN = 100.0
+SEED_TRIES  = 8      #kac tohum denenecek
+GOOD_ENOUGH = 1.10   #alt sinirin bu katina inince yeni tohum denenmez
+
 
 Point3 = tuple[float, float, float]
 Pose3 = tuple[float, float, float, float]
@@ -146,19 +149,43 @@ def _bearing(origin: Point3, target: Point3) -> float:
     return math.atan2(target[1] - origin[1], target[0] - origin[0])
 
 
-def waypoint_headings(waypoints) -> list[float]:
+def compass_to_yaw(degrees: float) -> float:
+    """Pusula derecesini (0 kuzey, saat yonu) cerceve yaw'ina cevirir.
+
+    Iki duzen birbirinin aynasi: pusula kuzeyden saat yonunde artiyor, yaw
+    dogudan saat tersine. Donusumu atlamak 90 derece sessiz hata verir -
+    rota mantikli gorunur ama yanlis yerden cikar.
+    """
+    return math.radians(90.0 - degrees)
+
+
+def yaw_to_compass(yaw: float) -> float:
+    """Cerceve yaw'ini pusula derecesine cevirir; [0, 360) araligina sarar."""
+    return math.degrees(math.pi / 2 - yaw) % 360.0
+
+
+def waypoint_headings(waypoints, pinned=None) -> list[float]:
     """Her waypoint icin ucagin bakacagi yon.
 
     Kullanici haritaya tiklarken yon girmiyor, ama plan3d her iki uca da
-    yaw istiyor. Ara noktalarda gelis ve gidis kerterizinin aciortasi
-    aliniyor; boylece bacaklar arasinda bas acisi surekli kaliyor ve rota
-    duraklarda kirilmiyor.
+    yaw istiyor. Sabitlenmemis noktalarda gelis ve gidis kerterizinin
+    aciortasi aliniyor; boylece bacaklar arasinda bas acisi surekli kaliyor
+    ve rota duraklarda kirilmiyor. pinned'daki None olmayan degerler
+    (yaw, radyan) oldugu gibi kullaniliyor.
     """
     if len(waypoints) < 2:
         raise ValueError(f"en az iki waypoint gerekli: {len(waypoints)}")
+    if pinned is None:
+        pinned = [None] * len(waypoints)
+    if len(pinned) != len(waypoints):
+        raise ValueError(f"bas acisi sayisi waypoint sayisiyla uyusmuyor: "
+                         f"{len(pinned)} != {len(waypoints)}")
 
     headings = []
     for index, point in enumerate(waypoints):
+        if pinned[index] is not None:
+            headings.append(pinned[index])
+            continue
         if index == 0:
             headings.append(_bearing(point, waypoints[1]))
             continue
@@ -256,6 +283,7 @@ def waypoint_altitudes(grounds, clearance: float, pinned=None) -> list[float]:
         else:
             altitudes.append(ground + agl)
     return altitudes
+        
 
 
 def build_env_2d(bounds, constraints: Constraints,
@@ -268,8 +296,86 @@ def build_env_2d(bounds, constraints: Constraints,
     return Environment(bounds, obstacles, constraints.clearance)
 
 
+# Yineleme sayisi rota KALITESINI degil, rotayi BULABILMEYI belirliyor:
+# olculdu, 400 ile 3000 ayni rotayi veriyor (shortcut agac kalitesini
+# golgeliyor, bkz. rapor 20) ama dar labirentte 400 yarim yarim basarisiz.
+# Sabit 3000 bu yuzden kotu senaryo icin her gorevde odenen bir sigorta
+# primiydi. Simdi azdan basliyoruz; bulunmazsa artiriyoruz.
+ITERATION_LADDER = (400, 1200)
+
+
+def _budgets(limit: int) -> list[int]:
+    """Denenecek yineleme butceleri, artan sirada; sonuncusu limit."""
+    steps = [n for n in ITERATION_LADDER if n < limit]
+    steps.append(limit)
+    return steps
+
+
+def _plan_leg(attempt, limit: int):
+    """Bulunana kadar butceyi artirarak dener; ilk basariyi doner.
+
+    Ayni tohumla uzun kosu, kisa kosunun BIREBIR devami - rastgele dizi
+    ayni yerden basliyor. Yani basarisiz deneme bosa giden zaman, kaybolan
+    cesitlilik degil; sonuc sabit butceyle ayni kaliyor.
+    """
+    result = None
+    for budget in _budgets(limit):
+        result = attempt(budget)
+        if result.found:
+            return result
+    return result
+
+
+# Tek tohumla planlamak, tohumlar arasi dagilimdan RASTGELE bir ornek
+# cekmek demek: ayni bacakta olculen maliyet alt sinirin 1.13 ile 2.44 kati
+# arasinda degisti. Birkac tohumun en iyisini almak dort bacakli olcumde
+# rotayi %14.6 kisaltti. Sekiz tohum ve 1.10 esigi, korlemesine aramanin
+# kazancinin %90'ini suresinin %37'sine veriyor.
+SEED_TRIES = 8
+GOOD_ENOUGH = 1.10
+
+
+def _seeds(base: int | None, count: int) -> list[int]:
+    """Denenecek tohumlar; ilki base'in kendisi.
+
+    base once geliyor ki count=1 bugunku davranisin birebir aynisi olsun
+    ve kullanicinin girdigi tohumla uretilmis eski bir rota yeniden
+    uretilebilsin. Tohumlar birbirinden farkli olmali: ayni tohum ikinci
+    kez birebir ayni rotayi verir.
+    """
+    if base is None:
+        # Tohum girilmemis: rota zaten tekrarlanabilir degil, ama
+        return random.Random().sample(range(1, 1 << 30), count)
+    return [base + offset for offset in range(count)]
+
+
+def _best_of_seeds(plan_one, seeds, lower_bound: float):
+    """Bacagi her tohumla planlayip EN UCUZ sonucu doner.
+
+    plan_one(seed) -> (bulundu, kenarlar, maliyet). Maliyet KISALTILMIS
+    rotadan gelmeli: rota kalitesini shortcut belirliyor, agacin kendisi
+    degil, o yuzden ham RRT* maliyeti yanlis tohumu secer.
+
+    Alt sinira yeterince yaklasan bacakta duruyor; kazanc orada tukendi
+    ve her ek tohum tam bir planlama kosusu kadar zaman.
+    """
+    enough = GOOD_ENOUGH * lower_bound
+    best = (False, [], math.inf)
+    for seed in seeds:
+        found, edges, cost = plan_one(seed)
+        # Bulunamayan sonucun maliyeti anlamsiz; karsilastirmaya girerse
+        # kazanan o olur ve bacak bos doner.
+        if not found:
+            continue
+        if cost < best[2]:
+            best = (True, edges, cost)
+        if best[2] <= enough:
+            break
+    return best
+
+
 def plan_mission_2d(waypoints, env: Environment, constraints: Constraints,
-                    altitude: float) -> Mission:
+                    altitude: float, headings=None) -> Mission:
     """Yatay duzlemde bacak bacak planlar; irtifa sabit seyir irtifasi.
 
     Arazi hesaba KATILMIYOR - bu 2B planlama. Arazi verisi varsa rotanin
@@ -277,25 +383,37 @@ def plan_mission_2d(waypoints, env: Environment, constraints: Constraints,
     ondan kacinmiyor; kacinma icin 3B mod var.
     """
     flat = [(point[0], point[1]) for point in waypoints]
-    headings = waypoint_headings(flat)
+    headings = waypoint_headings(flat, headings)
     poses = [(point[0], point[1], heading)
              for point, heading in zip(flat, headings)]
 
     step = env.suggested_step()
+    seeds = _seeds(constraints.seed, SEED_TRIES)
     legs = []
     for start, goal in zip(poses, poses[1:]):
-        result = plan2d(start, goal, env, constraints.rho,
-                        max_iterations=constraints.max_iterations,
-                        goal_bias=0.10,
-                        max_edge_length=10 * constraints.rho,
-                        rng=random.Random(constraints.seed))
-        edges = [FlatEdge(path, altitude)
-                 for path in shortcut2d(result.edges, env, constraints.rho,
-                                        step)] if result.found else []
-        cost = sum(edge.length for edge in edges) if result.found else math.inf
+        # Kisaltma da iceride: tohumlari HAM maliyete gore karsilastirmak
+        # yanlis tohumu secer, rotayi shortcut belirliyor.
+        def plan_one(seed):
+            result = _plan_leg(
+                lambda budget: plan2d(start, goal, env, constraints.rho,
+                                      max_iterations=budget,
+                                      goal_bias=0.10,
+                                      max_edge_length=10 * constraints.rho,
+                                      rng=random.Random(seed)),
+                constraints.max_iterations)
+            if not result.found:
+                return False, [], math.inf
+            edges = [FlatEdge(path, altitude)
+                     for path in shortcut2d(result.edges, env,
+                                            constraints.rho, step)]
+            return True, edges, sum(edge.length for edge in edges)
+
+        # Alt sinir YATAY: FlatEdge.length yatay Dubins uzunlugu.
+        found, edges, cost = _best_of_seeds(
+            plan_one, seeds, math.dist(start[:2], goal[:2]))
         legs.append(Leg((start[0], start[1], altitude, start[2]),
                         (goal[0], goal[1], altitude, goal[2]),
-                        edges, result.found, cost))
+                        edges, found, cost))
 
     found = all(leg.found for leg in legs)
     cost = sum(leg.cost for leg in legs) if found else math.inf
@@ -303,32 +421,42 @@ def plan_mission_2d(waypoints, env: Environment, constraints: Constraints,
     return Mission(legs, found, cost, duration)
 
 
-def plan_mission(waypoints, env: Environment3D,
-                 constraints: Constraints) -> Mission:
+def plan_mission(waypoints, env: Environment3D, constraints: Constraints,
+                 headings=None) -> Mission:
     """Waypoint dizisini bacak bacak planlar ve tek rotaya birlestirir.
 
     env, constraints.clearance ile kurulmus olmali - build_env bunu yapiyor.
     Bir bacak bulunamazsa gorev found=False doner ama diger bacaklar yine
     hesaplanir; arayuzde hangi bacagin takildigini gostermek icin.
     """
-    headings = waypoint_headings(waypoints)
+    headings = waypoint_headings(waypoints, headings)
     poses = [(point[0], point[1], point[2], heading)
              for point, heading in zip(waypoints, headings)]
 
     step = env.suggested_step()
+    seeds = _seeds(constraints.seed, SEED_TRIES)
     legs = []
     for start, goal in zip(poses, poses[1:]):
-        result = plan3d(start, goal, env, constraints.rho,
-                        constraints.max_climb,
-                        max_iterations=constraints.max_iterations,
-                        goal_bias=0.10,
-                        max_edge_length=10 * constraints.rho,
-                        refine_steps=8,
-                        rng=random.Random(constraints.seed))
-        edges = shortcut(result.edges, env, constraints.rho,
-                         constraints.max_climb, step, 8) if result.found else []
-        cost = sum(edge.length for edge in edges) if result.found else math.inf
-        legs.append(Leg(start, goal, edges, result.found, cost))
+        def plan_one(seed):
+            result = _plan_leg(
+                lambda budget: plan3d(start, goal, env, constraints.rho,
+                                      constraints.max_climb,
+                                      max_iterations=budget,
+                                      goal_bias=0.10,
+                                      max_edge_length=10 * constraints.rho,
+                                      refine_steps=8,
+                                      rng=random.Random(seed)),
+                constraints.max_iterations)
+            if not result.found:
+                return False, [], math.inf
+            edges = shortcut(result.edges, env, constraints.rho,
+                             constraints.max_climb, step, 8)
+            return True, edges, sum(edge.length for edge in edges)
+
+        # Alt sinir 3B: DubinsPath3D.length yatay uzunluk / cos(gamma).
+        found, edges, cost = _best_of_seeds(
+            plan_one, seeds, math.dist(start[:3], goal[:3]))
+        legs.append(Leg(start, goal, edges, found, cost))
 
     found = all(leg.found for leg in legs)
     cost = sum(leg.cost for leg in legs) if found else math.inf

@@ -10,7 +10,9 @@ from app.mission import (ALTITUDE_MARGIN, Constraints, FlatEdge, Zone,
                          geo_window, plan_mission, plan_mission_2d,
                          sample_mission, waypoint_altitudes,
                          waypoint_headings)
-from app.mission import wind_cost
+from app.mission import (GOOD_ENOUGH, ITERATION_LADDER, SEED_TRIES,
+                         _best_of_seeds, _budgets, _plan_leg, _seeds,
+                         compass_to_yaw, wind_cost, yaw_to_compass)
 from src.dubins import shortest_path
 from src.rrt_star import LENGTH
 from src.wind import wind_vector
@@ -534,3 +536,261 @@ class TestWindCost:
         # Ruzgarsiz plan bugunku davranisini korumali.
         assert LENGTH.of_edge(self.EDGE) == pytest.approx(self.EDGE.length)
         assert LENGTH.lower_bound(1234.0) == 1234.0
+
+
+class TestIterationBudget:
+    """Yineleme butcesi kademeli: azdan basla, bulunamazsa artir.
+
+    Olculdu - 400 ile 3000 ayni rotayi veriyor (shortcut agac kalitesini
+    golgeliyor) ama dar labirentte 400 yarim yarim basarisiz. Yani sayi
+    kaliteyi degil BULABILMEYI belirliyor; sabit yuksek deger her gorevde
+    odenen sigorta primiydi.
+    """
+
+    class _Result:
+        def __init__(self, found):
+            self.found = found
+
+    def test_budgets_end_at_the_limit(self):
+        assert _budgets(3000)[-1] == 3000
+        assert _budgets(500)[-1] == 500
+
+    def test_budgets_increase(self):
+        steps = _budgets(3000)
+        assert steps == sorted(steps)
+        assert len(steps) == len(set(steps))
+
+    def test_small_limit_is_a_single_attempt(self):
+        # Limit merdivenin altindaysa bosuna deneme yapilmamali.
+        assert _budgets(200) == [200]
+        assert _budgets(ITERATION_LADDER[0]) == [ITERATION_LADDER[0]]
+
+    def test_stops_at_the_first_success(self):
+        tried = []
+
+        def attempt(budget):
+            tried.append(budget)
+            return self._Result(True)
+
+        result = _plan_leg(attempt, 3000)
+        assert result.found
+        assert tried == [_budgets(3000)[0]]        # tek deneme
+
+    def test_escalates_until_found(self):
+        tried = []
+
+        def attempt(budget):
+            tried.append(budget)
+            return self._Result(budget >= 1200)
+
+        _plan_leg(attempt, 3000)
+        assert tried == [400, 1200]
+
+    def test_failure_returns_the_last_attempt(self):
+        # Hepsi basarisizsa sonuc yine donmeli; arayuz hangi bacagin
+        # takildigini gostermek icin bunu kullaniyor.
+        tried = []
+
+        def attempt(budget):
+            tried.append(budget)
+            return self._Result(False)
+
+        result = _plan_leg(attempt, 3000)
+        assert result.found is False
+        assert tried == _budgets(3000)
+
+
+class TestCompassConversion:
+    """Pusula derecesi <-> cerceve yaw.
+
+    Iki ayri duzen: pusula kuzeyden saat yonunde, yaw dogudan saat
+    tersine. Karistirmak 90 derece sessiz hata verir - rota mantikli
+    gorunur, yanlis yerden cikar. wind_vector'daki tuzagin aynisi.
+    """
+
+    def test_cardinal_directions(self):
+        assert compass_to_yaw(0.0) == pytest.approx(math.pi / 2)      # kuzey
+        assert compass_to_yaw(90.0) == pytest.approx(0.0)             # dogu
+        assert compass_to_yaw(180.0) == pytest.approx(-math.pi / 2)   # guney
+        assert compass_to_yaw(270.0) == pytest.approx(-math.pi)       # bati
+
+    def test_round_trip(self):
+        for degrees in (0.0, 37.0, 90.0, 123.5, 250.0, 359.9):
+            assert yaw_to_compass(compass_to_yaw(degrees)) ==                 pytest.approx(degrees, abs=1e-9)
+
+    def test_compass_is_wrapped_into_a_full_turn(self):
+        assert yaw_to_compass(compass_to_yaw(370.0)) == pytest.approx(10.0)
+        assert 0.0 <= yaw_to_compass(-7.0) < 360.0
+
+    def test_bearing_matches_compass(self):
+        # Dogu yonundeki bir bacagin kerterizi 90 derece olmali.
+        east = waypoint_headings([(0.0, 0.0), (1000.0, 0.0)])[0]
+        assert yaw_to_compass(east) == pytest.approx(90.0)
+        north = waypoint_headings([(0.0, 0.0), (0.0, 1000.0)])[0]
+        assert yaw_to_compass(north) == pytest.approx(0.0)
+
+
+class TestPinnedHeadings:
+    """Bas acisi istege bagli sabitleniyor; bos birakilan aciortaya dusuyor."""
+
+    SQUARE = [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0)]
+
+    def test_no_pins_keeps_the_old_behaviour(self):
+        assert waypoint_headings(self.SQUARE, None) ==             waypoint_headings(self.SQUARE)
+
+    def test_pinned_value_is_used_verbatim(self):
+        pinned = [None, compass_to_yaw(45.0), None, None]
+        got = waypoint_headings(self.SQUARE, pinned)
+        assert yaw_to_compass(got[1]) == pytest.approx(45.0)
+
+    def test_unpinned_neighbours_still_use_the_bisector(self):
+        loose = waypoint_headings(self.SQUARE)
+        pinned = waypoint_headings(self.SQUARE,
+                                   [None, compass_to_yaw(45.0), None, None])
+        assert pinned[0] == pytest.approx(loose[0])
+        assert pinned[2] == pytest.approx(loose[2])
+        assert pinned[3] == pytest.approx(loose[3])
+
+    def test_first_and_last_can_be_pinned(self):
+        # Kalkis yonu ve varis yonu: kullanicinin en cok isteyecegi ikisi.
+        pinned = waypoint_headings(
+            self.SQUARE, [compass_to_yaw(10.0), None, None,
+                          compass_to_yaw(200.0)])
+        assert yaw_to_compass(pinned[0]) == pytest.approx(10.0)
+        assert yaw_to_compass(pinned[-1]) == pytest.approx(200.0)
+
+    def test_all_pinned(self):
+        want = [0.0, 90.0, 180.0, 270.0]
+        got = waypoint_headings(self.SQUARE,
+                                [compass_to_yaw(d) for d in want])
+        assert [yaw_to_compass(y) for y in got] == pytest.approx(want)
+
+    def test_length_mismatch_is_refused(self):
+        with pytest.raises(ValueError, match="uyusmuyor"):
+            waypoint_headings(self.SQUARE, [None, None])
+
+
+class TestSeeds:
+    """Denenecek tohumlarin uretimi.
+
+    Tek tohumla planlama, tohumlar arasi dagilimdan RASTGELE bir ornek
+    cekiyor: ayni bacakta olculen maliyet alt sinirin 1.13 ile 2.44 kati
+    arasinda degisti. Birkac tohumun en iyisi optimuma belirgin sekilde
+    yaklasiyor (dort bacakli olcumde -%14.6).
+    """
+
+    def test_count_is_honoured(self):
+        assert len(_seeds(1, 5)) == 5
+        assert len(_seeds(1, 1)) == 1
+
+    def test_seeds_are_distinct(self):
+        # Ayni tohum iki kez denenirse ikinci kosu birebir ayni rotayi
+        # verir: harcanan zaman, kazanilan hicbir sey.
+        assert len(set(_seeds(1, 8))) == 8
+
+    def test_same_base_gives_the_same_seeds(self):
+        # Ayni gorev iki kez planlaninca ayni rota cikmali.
+        assert _seeds(7, 6) == _seeds(7, 6)
+
+    def test_different_bases_differ(self):
+        assert _seeds(1, 6) != _seeds(2, 6)
+
+    def test_base_is_tried_first(self):
+        # count=1 bugunku davranisin ta kendisi olmali; kullanicinin
+        # girdigi tohum once denenmezse eski rotalar yeniden uretilemez.
+        assert _seeds(7, 1) == [7]
+        assert _seeds(7, 5)[0] == 7
+
+    def test_missing_base_still_gives_distinct_seeds(self):
+        # Tohum girilmemisse rota zaten tekrarlanabilir degil, ama
+        # tohumlarin BIRBIRINDEN farkli olmasi yine sart.
+        assert len(set(_seeds(None, 5))) == 5
+
+
+class TestBestOfSeeds:
+    """Bacagi birkac tohumla planlayip en ucuzunu secen katman.
+
+    Maliyet KISALTILMIS rotadan gelmeli: rota kalitesini shortcut
+    belirliyor, agacin kendisi degil. Ham RRT* maliyetine bakarak tohum
+    secmek yanlis tohumu secer.
+    """
+
+    @staticmethod
+    def _fake(costs, seen=None):
+        """costs: tohum -> maliyet; None ise o tohum bulamadi demek."""
+        def plan_one(seed):
+            if seen is not None:
+                seen.append(seed)
+            cost = costs[seed]
+            if cost is None:
+                return False, [], math.inf
+            return True, [f"kenar-{seed}"], cost
+        return plan_one
+
+    def test_picks_the_cheapest(self):
+        found, edges, cost = _best_of_seeds(
+            self._fake({1: 300.0, 2: 120.0, 3: 250.0}), [1, 2, 3], 100.0)
+        assert found
+        assert cost == 120.0
+        assert edges == ["kenar-2"]          # kazanan tohumun kenarlari
+
+    def test_every_seed_is_actually_used(self):
+        # En sinsi hata: plan_one tohumu yok sayarsa her kosu ayni rotayi
+        # verir, kod calisir, ozellik hicbir sey yapmaz.
+        seen = []
+        _best_of_seeds(self._fake({1: 300.0, 2: 290.0, 3: 280.0}, seen),
+                       [1, 2, 3], 100.0)
+        assert seen == [1, 2, 3]
+
+    def test_stops_once_close_to_the_lower_bound(self):
+        # Alt sinira yaklasmis bacakta kazanc tukendi; her ek tohum tam
+        # bir planlama kosusu kadar zaman.
+        seen = []
+        found, _, cost = _best_of_seeds(
+            self._fake({1: 300.0, 2: 105.0, 3: 101.0}, seen), [1, 2, 3], 100.0)
+        assert found
+        assert cost == 105.0
+        assert seen == [1, 2]                # ucuncu tohum denenmedi
+
+    def test_first_seed_can_end_it(self):
+        seen = []
+        _best_of_seeds(self._fake({1: 100.0, 2: 90.0}, seen), [1, 2], 100.0)
+        assert seen == [1]
+
+    def test_unreachable_bound_tries_every_seed(self):
+        seen = []
+        _best_of_seeds(self._fake({1: 900.0, 2: 800.0, 3: 700.0}, seen),
+                       [1, 2, 3], 100.0)
+        assert seen == [1, 2, 3]
+
+    def test_failed_seeds_are_skipped(self):
+        # Bulunamayan sonucun maliyeti anlamsiz; karsilastirmaya girerse
+        # kazanan o olur ve bacak bos doner.
+        found, edges, cost = _best_of_seeds(
+            self._fake({1: None, 2: 400.0, 3: None}), [1, 2, 3], 100.0)
+        assert found
+        assert cost == 400.0
+        assert edges == ["kenar-2"]
+
+    def test_all_failing_reports_failure(self):
+        # Arayuz hangi bacagin takildigini bundan ogreniyor.
+        found, edges, cost = _best_of_seeds(
+            self._fake({1: None, 2: None}), [1, 2], 100.0)
+        assert found is False
+        assert edges == []
+        assert cost == math.inf
+
+    def test_threshold_matches_the_constant(self):
+        # Esik alt sinirin GOOD_ENOUGH kati; sabit degisince test de
+        # degissin diye sabitin kendisiyle kuruluyor.
+        bound = 100.0
+        just_over = bound * GOOD_ENOUGH * 1.01
+        just_under = bound * GOOD_ENOUGH * 0.99
+        seen = []
+        _best_of_seeds(self._fake({1: just_over, 2: just_under}, seen),
+                       [1, 2], bound)
+        assert seen == [1, 2]                # ilki esigi gecemedi
+        seen = []
+        _best_of_seeds(self._fake({1: just_under, 2: just_over}, seen),
+                       [1, 2], bound)
+        assert seen == [1]                   # ilki yetti

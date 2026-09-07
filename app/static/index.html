@@ -22,7 +22,7 @@
     --good:    #35a87c;
     --warn:    #c98a1e;
 
-    --rail: 322px;
+    --rail: 384px;
     --deck: 92px;
 
     /* Bahnschrift DIN soyundan: havacilik levhalarinin ve muhendislik
@@ -174,7 +174,7 @@
 
   /* Waypoint rozetleri ve bolge tutamaklari: haritanin ustunde HTML,
      cunku MapLibre'de yazi cizen katman font sunucusu ister. */
-  .wplabel, .zdot, .zgrip {
+  .wplabel, .zdot, .zgrip, .hgrip, .hline {
     position: absolute; transform: translate(-50%, -50%);
     pointer-events: auto; user-select: none;
   }
@@ -199,6 +199,32 @@
     background: var(--panel); border: 1.5px solid var(--route);
   }
   .zdot.dragging, .zgrip.dragging { filter: brightness(1.25); }
+
+  /* Bas acisi tutamagi: yalnizca secili waypointte gorunuyor. Cizgi
+     ucagin bakacagi yonu gosteriyor, ucundaki halka cevriliyor. */
+  .hline {
+    height: 2.5px; background: var(--route);
+    transform-origin: 0 50%; pointer-events: none;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .8));
+  }
+  /* Ok ucu cizginin cocugu: cizgiyle birlikte donuyor, ayrica aci
+     hesaplamak gerekmiyor. */
+  .hline::after {
+    content: ""; position: absolute; right: -2px; top: 50%;
+    transform: translateY(-50%);
+    border-left: 12px solid var(--route);
+    border-top: 7px solid transparent;
+    border-bottom: 7px solid transparent;
+  }
+  /* Tutamak ok ucunu saran halka: kavrama alani genis, gorunum sade. */
+  .hgrip {
+    width: 20px; height: 20px; border-radius: 50%; cursor: grab;
+    background: transparent; border: 1.5px dashed rgba(239, 77, 94, .5);
+  }
+  .hgrip.pinned { border-style: solid; border-color: var(--route); }
+  .hgrip:hover { border-color: var(--route); }
+  .hgrip.dragging { cursor: grabbing; border-style: solid;
+                    background: rgba(239, 77, 94, .2); }
 
   /* Bolge cizerken: canli halka, merkeze giden kesikli olcu cizgisi ve
      yaricap okumasi. Pergel gibi. */
@@ -298,10 +324,15 @@
     <section class="block">
       <h2>Gorev</h2>
       <div class="fields">
-        <div class="field"><label>emniyet m</label>
-          <input id="clearance" type="number" value="100" min="0" max="1000" step="10"></div>
-        <div class="field"><label>yineleme</label>
-          <input id="iterations" type="number" value="3000" min="200" max="20000" step="500"></div>
+        <div class="field" title="Hem araziden dikey pay, hem yasak
+bolgelerin yaricapina eklenen yatay pay.">
+          <label>emniyet m</label>
+          <input id="clearance" type="number" value="10" min="0" max="1000" step="10"></div>
+        <div class="field" title="Ust sinir. Planlayici az yinelemeyle
+baslayip bulamazsa artiriyor; bu deger son denemenin butcesi.">
+          <label>en fazla yineleme</label>
+          <input id="iterations" type="number" value="3000" min="200"
+                 max="20000" step="500"></div>
       </div>
       <div class="fields" style="margin-top:8px">
         <div class="field"><label>tohum</label>
@@ -326,7 +357,7 @@ ya da karsilastirma icin.">
         <button id="addWp">Ekle</button></h2>
       <table>
         <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
-          <th id="altHead">kot m</th><th></th></tr></thead>
+          <th id="altHead">kot m</th><th>yon&deg;</th><th></th></tr></thead>
         <tbody id="wplist"></tbody>
       </table>
       <p class="hint" id="empty">Ekle'ye bas, sonra haritaya tikla.</p>

@@ -20,9 +20,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.mission import (Constraints, Zone, agl_profile, auto_altitude,
-                         build_env, build_env_2d, geo_window, plan_mission,
-                         plan_mission_2d, sample_leg, sample_mission,
-                         waypoint_altitudes)
+                         build_env, build_env_2d, compass_to_yaw, geo_window,
+                         plan_mission, plan_mission_2d, sample_leg,
+                         sample_mission, waypoint_altitudes, waypoint_headings,
+                         yaw_to_compass)
 from src.geo import Frame
 from src.terrain import MissingTiles, TileStore, tile_name
 from src.terrarium import ElevationUnavailable, TerrariumSource
@@ -226,13 +227,13 @@ def _constraints_from(body):
         speed=float(body.get("speed", 28.0)),
         max_bank=math.radians(float(body.get("bank_deg", 30.0))),
         max_climb=math.radians(float(body.get("climb_deg", 8.0))),
-        clearance=float(body.get("clearance", 100.0)),
+        clearance=float(body.get("clearance", 10.0)),
         max_iterations=int(body.get("iterations", 3000)),
         seed=int(body.get("seed", 1)),
     )
 
 
-def _run_2d(points, frame, peak, bounds, zones, constraints):
+def _run_2d(points, frame, peak, bounds, zones, constraints, headings):
     """Yatay rota, tek seyir kotu; arazi HESABA KATILMIYOR.
 
     Kot girilmiyor: arazi varsa pencerenin en yuksek noktasinin uzerinde,
@@ -248,13 +249,15 @@ def _run_2d(points, frame, peak, bounds, zones, constraints):
         if not env.is_free(point):
             raise ValueError(f"{index + 1}. waypoint yasak bolgenin icinde "
                              f"ya da harita disinda")
-    mission = plan_mission_2d(waypoints, env, constraints, cruise)
+    mission = plan_mission_2d(waypoints, env, constraints, cruise,
+                              headings)
     # Yuk hep (x, y, z) olsun: 3B gorunum waypointleri seyir kotunda
     # cizebilsin diye.
     return mission, [(x, y, cruise) for x, y in waypoints]
 
 
-def _run_3d(flat, altitudes, pinned, terrain, bounds, zones, constraints):
+def _run_3d(flat, altitudes, pinned, terrain, bounds, zones, constraints,
+            headings):
     """Araziden ve yasak bolgelerden kacinan uc boyutlu rota.
 
     Kotlar disarida hesaplandi: harita tavani onlara bagli ve tavan
@@ -272,7 +275,8 @@ def _run_3d(flat, altitudes, pinned, terrain, bounds, zones, constraints):
         raise ValueError(f"{index + 1}. waypoint yasak bolgenin icinde ya "
                          f"da harita disinda (kot {how}: {point[2]:.0f} m). "
                          f"Waypointi kaydir ya da bolgeyi kucult.")
-    return plan_mission(waypoints, env, constraints), waypoints
+    return (plan_mission(waypoints, env, constraints, headings),
+            waypoints)
 
 
 def plan_payload(body):
@@ -299,6 +303,11 @@ def plan_payload(body):
     # tek kotta, waypoint basina irtifa tanimsiz.
     pinned = [float(p[2]) if len(p) > 2 and p[2] is not None else None
               for p in raw]
+    # Dorduncu eleman istege bagli bas acisi, PUSULA derecesi (0 kuzey).
+    # Cerceve yaw'i dogudan saat tersine oldugu icin cevriliyor; ikisini
+    # karistirmak 90 derece sessiz hata olurdu.
+    headings = [compass_to_yaw(float(p[3]))
+                if len(p) > 3 and p[3] is not None else None for p in raw]
     constraints = _constraints_from(body)
 
     margin = max(WINDOW_MARGIN, 4 * constraints.rho)
@@ -342,7 +351,7 @@ def plan_payload(body):
     fell_back = False
     if mode == "3d":
         mission, waypoints = _run_3d(flat, altitudes, pinned, terrain,
-                                     bounds, zones, constraints)
+                                     bounds, zones, constraints, headings)
         # Tirmanma sinirinin kaldiramadigi bir sirt butun gorevi
         # cope atmasin: araziyi yok sayan rota hala bir sonuc, yeter ki
         # oyle oldugu soylensin. Arayuz bunu yuksek sesle yaziyor.
@@ -351,7 +360,7 @@ def plan_payload(body):
 
     if mode == "2d":
         mission, waypoints = _run_2d(points, frame, peak, bounds, zones,
-                                     constraints)
+                                     constraints, headings)
 
     step = constraints.speed * FRAME_SECONDS
 
@@ -411,6 +420,11 @@ def plan_payload(body):
                             if terrain is not None else None),
         "waypoints": [[round(point[0], 2), round(point[1], 2),
                        round(point[2], 1)] for point in waypoints],
+        # Kullanilan bas acilari, pusula derecesi. Sabitlenmemis olanlar
+        # aciortaydan cikiyor; arayuz ikisini de gosteriyor.
+        "headings": [round(yaw_to_compass(y), 1)
+                     for y in waypoint_headings(
+                         [(p[0], p[1]) for p in waypoints], headings)],
         "zones": [{"x": zone.x, "y": zone.y, "radius": zone.radius}
                   for zone in zones],
         "terrain": (terrain_payload() if terrain is not None
@@ -424,7 +438,7 @@ def plan_payload(body):
         "message": ("" if mission.found else
                     f"{', '.join(str(n) for n in failed)}. bacak "
                     f"planlanamadi; emniyet payini artir (rotayi yukseltir), "
-                    f"yineleme sayisini artir ya da waypoint'i kaydir"),
+                    f"yineleme ust sinirini yukselt ya da waypoint'i kaydir"),
     }
 
 

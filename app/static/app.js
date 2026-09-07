@@ -19,6 +19,7 @@ let zones = [];            // {lat, lon, radius} yasak bolgeler
 let mode = "3d";           // beklenen mod: "flat" kutusu isaretliyse 2d
 let planMode = null;       // sunucunun fiilen kostugu mod; plan bozulunca null
 let missionFile = null;    // {text, points, deviation, tolerance} | null
+let planHeadings = null;   // son planda kullanilan bas acilari, pusula
 let arming = null;         // null | "waypoint" | "zone"
 let drawing = null;        // {lat, lon, px, py} - bolge cizimi suruyor
 let selected = -1;         // secili waypoint; iki gorunumde de ortak
@@ -41,6 +42,7 @@ let lastPlane3d = 0;       // 3B ucak guncellemesi kisitlaniyor
 // 3B isaretler rotanin altinda ya da ustunde asili kalir.
 const ALT_MARGIN = 100;
 const NO_TERRAIN_CRUISE = 1000;
+const HEADING_ARM = 54;         // bas acisi tutamaginin piksel uzunlugu
 const MIN_ZONE_RADIUS = 150;    // altinda bolge cizmek kazadir
 const QUICK_ZONE_RADIUS = 800;  // surukleme yerine tiklandiysa
 
@@ -419,10 +421,34 @@ function updateOverlays() {
     place(node, lonLatToPixel(w.lon, w.lat, rect), rect);
   });
 
+  // Bas acisi tutamagi yalnizca secili waypointte: haritayi kalabalik
+  // etmemek icin. Cizgi ucagin bakacagi yonu gosteriyor.
+  const shown = selected >= 0 && selected < waypoints.length ? 1 : 0;
+  const lines = ensureHandles(box, "hline", shown, () => {});
+  const grips = ensureHandles(box, "hgrip", shown,
+                              (node) => attachDrag(node, setHeading, false));
+  if (shown) {
+    const w = waypoints[selected];
+    const at = lonLatToPixel(w.lon, w.lat, rect);
+    const deg = headingOf(selected);
+    const rad = deg * Math.PI / 180;
+    // Ekranda y asagi artiyor, o yuzden kuzey bileseni eksi.
+    const tip = [at[0] + Math.sin(rad) * HEADING_ARM,
+                 at[1] - Math.cos(rad) * HEADING_ARM];
+    lines[0].style.width = HEADING_ARM + "px";
+    lines[0].style.transform = "rotate(" + (deg - 90) + "deg)";
+    place(lines[0], at, rect);
+    grips[0].dataset.index = String(selected);
+    grips[0].classList.toggle("pinned", w.hdg !== null);
+    grips[0].title = "bas acisi " + deg.toFixed(0) +
+                     " derece - surukleyerek cevir";
+    place(grips[0], tip, rect);
+  }
+
   const dots = ensureHandles(box, "zdot", zones.length,
                              (node) => attachDrag(node, moveZone, true));
-  const grips = ensureHandles(box, "zgrip", zones.length,
-                              (node) => attachDrag(node, resizeZone, true));
+  const zgrips = ensureHandles(box, "zgrip", zones.length,
+                               (node) => attachDrag(node, resizeZone, true));
   zones.forEach((zone, index) => {
     dots[index].dataset.index = String(index);
     dots[index].title = "bolge " + (index + 1) + " - surukleyerek tasi";
@@ -432,10 +458,41 @@ function updateOverlays() {
     // buyutup kucultuluyor.
     const east = zone.lon + zone.radius /
                  (METRES_PER_DEGREE * Math.cos(zone.lat * Math.PI / 180));
-    grips[index].dataset.index = String(index);
-    grips[index].title = "yaricap " + zone.radius.toFixed(0) + " m";
-    place(grips[index], lonLatToPixel(east, zone.lat, rect), rect);
+    zgrips[index].dataset.index = String(index);
+    zgrips[index].title = "yaricap " + zone.radius.toFixed(0) + " m";
+    place(zgrips[index], lonLatToPixel(east, zone.lat, rect), rect);
   });
+}
+
+// Tutamagin cekildigi yon bas acisi oluyor. Pusula derecesi: 0 kuzey,
+// saat yonunde - sunucudaki compass_to_yaw ile ayni duzen.
+function setHeading(index, lon, lat) {
+  const w = waypoints[index];
+  const east = (lon - w.lon) * Math.cos(w.lat * Math.PI / 180);
+  const north = lat - w.lat;
+  if (Math.abs(east) < 1e-12 && Math.abs(north) < 1e-12) return;
+  const deg = (90 - Math.atan2(north, east) * 180 / Math.PI + 360) % 360;
+  // Yalnizca degeri yaz: surukleme bitince fare yoneticisi zaten
+  // invalidatePlan ve renderList cagiriyor. Her fare hareketinde tabloyu
+  // yeniden kurmak saniyede 60 kez bosa is olurdu.
+  w.hdg = Math.round(deg);
+}
+
+// Sabitlenmemis waypointin bas acisi son plandan geliyor; hic plan yoksa
+// komsu waypointe dogru olan kerteriz gosteriliyor.
+function headingOf(index) {
+  const w = waypoints[index];
+  if (w.hdg !== null) return w.hdg;
+  if (planHeadings && planHeadings[index] !== undefined) {
+    return planHeadings[index];
+  }
+  const other = index === 0 ? waypoints[1] : waypoints[index - 1];
+  if (!other) return 0;
+  const from = index === 0 ? w : other;
+  const to = index === 0 ? other : w;
+  const east = (to.lon - from.lon) * Math.cos(from.lat * Math.PI / 180);
+  const north = to.lat - from.lat;
+  return (90 - Math.atan2(north, east) * 180 / Math.PI + 360) % 360;
 }
 
 function moveWaypoint(index, lon, lat) {
@@ -912,7 +969,8 @@ function activeMode() {
 
 // --- waypoint listesi --------------------------------------------------
 function addWaypoint(lat, lon) {
-  waypoints.push({ lat: lat, lon: lon, alt: null });   // null = otomatik
+  // alt ve hdg null iken otomatik: kot zeminden, bas acisi aciortaydan.
+  waypoints.push({ lat: lat, lon: lon, alt: null, hdg: null });
   invalidatePlan();
   renderList();
   updateOverlays();
@@ -923,6 +981,7 @@ function invalidatePlan() {
   path = [];
   planMode = null;          // artik gecerli bir plan yok
   missionFile = null;
+  planHeadings = null;
   $("export").disabled = true;
   stopPlayback();
   $("scrub").disabled = true;
@@ -964,8 +1023,21 @@ function renderList() {
         : '<td><input type="number" step="50" min="0" placeholder="' + hint +
           '" value="' + (w.alt === null ? "" : w.alt.toFixed(0)) +
           '" title="bos birak = otomatik"></td>') +
+      '<td><input type="number" step="5" min="0" max="360" class="hdg"' +
+        ' placeholder="' + headingOf(index).toFixed(0) + '" value="' +
+        (w.hdg === null ? "" : String(w.hdg)) +
+        '" title="bos birak = otomatik (aciortay)"></td>' +
       '<td class="drop"><button title="sil">&times;</button></td>';
-    const altInput = row.querySelector('input[type="number"]');
+    const hdgInput = row.querySelector("input.hdg");
+    hdgInput.addEventListener("change", (event) => {
+      const text = event.target.value.trim();
+      // Bosaltmak sabitlemeyi kaldiriyor, aciortaya geri donuyor.
+      w.hdg = text === "" ? null : ((Number(text) % 360) + 360) % 360;
+      invalidatePlan();
+      renderList();
+      updateOverlays();
+    });
+    const altInput = row.querySelector('input[type="number"]:not(.hdg)');
     if (altInput) {
       altInput.addEventListener("change", (event) => {
         const text = event.target.value.trim();
@@ -1047,8 +1119,9 @@ async function requestPlan() {
   stopPlayback();
 
   const body = {
-    // Ucuncu eleman sabitleme (AGL); null ise sunucu otomatige dusuyor.
-    waypoints: waypoints.map((w) => [w.lat, w.lon, w.alt]),
+    // Ucuncu eleman kot sabitlemesi (AGL), dorduncu bas acisi (pusula);
+    // null olanlarda sunucu otomatige dusuyor.
+    waypoints: waypoints.map((w) => [w.lat, w.lon, w.alt, w.hdg]),
     speed: Number($("speed").value),
     bank_deg: Number($("bank").value),
     climb_deg: Number($("climb").value),
@@ -1095,6 +1168,7 @@ async function requestPlan() {
   // Gercek modu isaretlerden ONCE oku: waypointsLocal buna bakiyor.
   planMode = data.mode || null;
   missionFile = data.mission_file || null;
+  planHeadings = data.headings || null;
   $("export").disabled = !(missionFile && missionFile.text);
   showPlanKind(data);
   legs = data.legs || [];
