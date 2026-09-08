@@ -286,6 +286,33 @@ def waypoint_altitudes(grounds, clearance: float, pinned=None) -> list[float]:
         
 
 
+# ISA troposfer modeli; 11 km'nin uzerinde gecerli degil ama planlama
+# tavani zaten oralara cikmiyor.
+ISA_LAPSE = 2.25577e-5
+ISA_EXPONENT = 4.2559
+
+
+def density_ratio(altitude: float) -> float:
+    """ISA yogunluk orani sigma; deniz seviyesinde 1, yukarida kucuk."""
+    if altitude >= 1.0 / ISA_LAPSE:
+        raise ValueError(f"kot ISA troposferinin disinda: {altitude}")
+    return (1.0 - ISA_LAPSE * altitude) ** ISA_EXPONENT
+
+
+def indicated_airspeed(true_airspeed: float, altitude: float) -> float:
+    """Otopilota yazilacak GOSTERGE hava hizi.
+
+    Pitot hiz degil dinamik basinc olcuyor; irtifada hava seyrek oldugu
+    icin ayni gercek hiz daha dusuk okunuyor. SITL'de olculen baginti
+    gosterge = gercek * sigma - ders kitabindaki sqrt(sigma) DEGIL; yedi
+    kot kusaginda olculdu ve duzeltince tahmin hatasi %6.7'den %0.9'a
+    indi. Gercek ucakta sqrt gecerli olabilir, bu deger SITL icin.
+    """
+    if true_airspeed <= 0.0:
+        raise ValueError(f"hava hizi pozitif olmali: {true_airspeed}")
+    return true_airspeed * density_ratio(altitude)
+
+
 def build_env_2d(bounds, constraints: Constraints,
                  obstacles: tuple[Obstacle, ...] = ()) -> Environment:
     """2B ortam: arazi YOK, yalnizca engeller ve harita siniri.

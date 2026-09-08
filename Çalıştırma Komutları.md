@@ -46,60 +46,130 @@ değil. Çerçeve sütunu 0 = MAV_FRAME_GLOBAL. Bilerek seçildi; otopilotun
 home kotu bizim arazi modelimizden farklı olsa bile görev kaymıyor.
 
 Bunun SITL'de bir sonucu var: SITL'in zemini DÜZ ve HOME İRTİFASINDA.
-Home'u rotanın en alçak noktasının ÜSTÜNE koyarsan uçak yerin altına
-inmeye çalışır ve düşer. Rotanın en düşük kotunu görev dosyasının son
-sütunundan oku, home'u onun en az 50 m altına koy.
+Home rotanın en alçak noktasının üstünde kalırsa uçak yerin altına
+inmeye çalışır. Bu yüzden home irtifası rotanın en düşük kotunun en az
+50 m altına konuyor -- sitl_setup.py bunu dosyadan kendisi hesaplıyor,
+elle bakman gerekmiyor.
 
 
---- YOL A: SITL (WSL) - ölçüm yapmak için ---
+--- HAZIRLIK (bir kez yapılır) ---
 
-1) Dosyayı WSL'e geçir. Windows yolunda Türkçe karakter var ve WSL'e
-   komut geçerken bozuluyor; ASCII bir ara duraktan geçir.
+Betikler repoda tools/ altında ama WSL'den oraya erişmek sorunlu: repo
+yolunda Türkçe karakter var ve WSL'e komut geçerken bozuluyor. Ev
+dizinine kopyala.
 
-   CMD'de:
-     copy "%USERPROFILE%\Downloads\gorev_*.waypoints" C:\Users\PC7668_BD26\gorev.waypoints
+  CMD'de (proje kökünde):
+    copy tools\fly_mission.py  C:\Users\PC7668_BD26\
+    copy tools\log_report.py   C:\Users\PC7668_BD26\
+    copy tools\sitl_setup.py   C:\Users\PC7668_BD26\
 
-   WSL'de:
-     cp /mnt/c/Users/PC7668_BD26/gorev.waypoints ~/gorev.waypoints
+  WSL'de:
+    mkdir -p ~/tools
+    cp /mnt/c/Users/PC7668_BD26/{fly_mission,log_report,sitl_setup}.py ~/tools/
 
-2) Simülatörü başlat (-l sırası: enlem,boylam,irtifa,yön):
+Betikleri değiştirdiğinde bunu tekrarla.
 
-     cd ~/ardupilot
-     python3 Tools/autotest/sim_vehicle.py -v ArduPlane --console --map -l 46.08,14.28,450,0 --speedup 10
 
-   --map açılmazsa (WSLg sorunu) onu çıkar, --console yeter.
-   --speedup 10 ile 20 dakikalık uçuş 2 dakikada biter; ölçülen süre
-   simülasyon zamanı olduğu için sonuç bozulmuyor.
+--- HER KOŞU: DÖRT ADIM ---
 
-3) MAVProxy isteminde -- konsol PENCERESİNDE değil, sim_vehicle'ı
-   başlattığın TERMİNALDE:
+Adım 1-2 her iki yolda da aynı. Adım 3'te seçim yapıyorsun.
+
+
+1) GÖREV DOSYASINI AL
+
+   Arayüzde "Görev dosyası" ile indir, sonra WSL'de:
+
+     cp "$(ls -t /mnt/c/Users/PC7668_BD26/Downloads/gorev_*.waypoints \
+         | head -1)" ~/yeni.waypoints
+
+   DİKKAT: Windows'ta "copy dosya_*.waypoints hedef" birden fazla
+   eşleşme bulursa dosyaları BİRLEŞTİRİYOR ve sonuç, geçerli görünen
+   ama bozuk bir görev oluyor. Yukarıdaki komut hep en yenisini alır.
+   Betikler de ikinci bir "QGC WPL" başlığı görürse duruyor.
+
+
+2) KOMUTLARI ÜRET
+
+     python3 ~/tools/sitl_setup.py ~/yeni.waypoints <rüzgâr_hız> \
+         <rüzgâr_yön> <hava_hızı>
+
+   Rüzgârsız uçacaksan:  0 0 28
+
+   Hava hızı arayüzdeki "hız" alanına yazdığın sayı; betik onu dosyadan
+   öğrenemez (QGC WPL biçiminde böyle bir alan yok). Vermezsen 28
+   varsayar ve bunu ekrana yazar.
+
+   Betik home irtifasını, ortalama kotu ve AIRSPEED_CRUISE'u hesaplayıp
+   çalıştıracağın komutları hazır yazıyor. Aşağıdaki <...> yerlerine
+   onun verdiği sayılar geliyor.
+
+
+3a) YOL A -- SADECE SÜRE (ölçüm için)
+
+   Ekranda uçak yok, sadece "ulaşıldı seq N" satırları akar. En hızlısı.
+
+   Terminal 1 (açık kalacak):
+     cd ~/ardupilot && python3 Tools/autotest/sim_vehicle.py -v ArduPlane \
+         --no-mavproxy --no-rebuild --speedup 10 \
+         -l <enlem>,<boylam>,<irtifa>,0
+
+   Terminal 2:
+     python3 ~/tools/fly_mission.py ~/yeni.waypoints \
+         <rüzgâr_hız> <rüzgâr_yön> <AIRSPEED_CRUISE>
+
+
+3b) YOL B -- HARİTALI (uçuşu izlemek için)
+
+   Tek terminal, tek komut. Konsol ve harita açılır, uçağı canlı
+   görürsün.
+
+     cd ~/ardupilot && python3 Tools/autotest/sim_vehicle.py -v ArduPlane \
+         --console --map --speedup 10 -l <enlem>,<boylam>,<irtifa>,0
+
+   Açılan MAVProxy isteminde (sim_vehicle'ı başlattığın TERMİNALDE,
+   konsol PENCERESİNDE değil):
 
      param set TERRAIN_ENABLE 0
-     wp load /home/tasneem/gorev.waypoints
+     param set AIRSPEED_CRUISE <AIRSPEED_CRUISE>
+     param set SIM_WIND_SPD <rüzgâr_hız>
+     param set SIM_WIND_DIR <rüzgâr_yön>
+     param set SIM_WIND_T 1
+     wp load /home/tasneem/yeni.waypoints
      mode AUTO
      arm throttle
 
    wp load'da TAM YOL şart: MAVProxy ~ işaretini açmıyor.
    Kalkış başlamazsa: rc 3 1800
+   Harita açılmazsa (WSLg sorunu) --map'i çıkar, --console yeter.
 
-   Rüzgâr denemek için:
-     param set SIM_WIND_SPD 8
-     param set SIM_WIND_DIR 0      (rüzgârın GELDİĞİ yön)
-
-4) Uçuş bitince süreyi çıkar:
-
-     python3 /home/tasneem/tools/tlog_legs.py ~/ardupilot/mav.tlog
-
-   Betik her waypointe varış zamanını ve rota süresini yazıyor; kalkışı
-   dışarıda bırakıyor çünkü modelin tahmini kalkışı kapsamıyor. Zaman
-   uçağın kendi saatinden alınıyor, duvar saatinden değil (--speedup
-   yüzünden duvar saati yanlış olurdu).
-
-   DİKKAT: mav.tlog her koşuda üzerine yazılıyor. Saklamak istersen:
-     cp ~/ardupilot/mav.tlog ~/kosu_1.tlog
+   SIM_WIND_T 1 = rüzgâr her kotta aynı. Varsayılan (0) rüzgârı 60 m
+   AGL altında azaltıyor, bizim modelimiz ise tekdüze rüzgâr sayıyor.
 
 
---- YOL B: Mission Planner - gerçek uçağa yüklemek için ---
+   HEM HARİTA HEM BETİK istersen: MAVProxy 5760'ı tuttuğu için betik
+   uçağa doğrudan bağlanamıyor, MAVProxy'nin bir çıkışına bağlanması
+   gerekiyor. Başlatma komutuna --out udp:127.0.0.1:14551 ekle, sonra
+   ikinci terminalde:
+
+     python3 ~/tools/fly_mission.py ~/yeni.waypoints \
+         <rüzgâr_hız> <rüzgâr_yön> <AIRSPEED_CRUISE> udpin:127.0.0.1:14551
+
+
+
+4) SONUCU OKU
+
+     python3 ~/tools/log_report.py \
+         $(ls -t ~/ardupilot/logs/*.BIN | head -1) <rüzgâr_hız> <rüzgâr_yön>
+
+   Rota süresini, uçulan mesafeyi, kot aralığını ve GERÇEK hava hızını
+   veriyor. Arayüzün yazdığı süreyle karşılaştır.
+
+   Neden tlog değil de dataflash: son waypointin MISSION_ITEM_REACHED'i
+   telemetride kaçabiliyor (bir koşuda kaçtı), dataflash'ta kaçmıyor.
+   Ayrıca dataflash koşu başına yeni dosya açıyor, üzerine yazmıyor.
+
+
+--- MISSION PLANNER: GERÇEK UÇAĞA YÜKLEMEK ---
 
 Masaüstündeki MissionPlanner-latest klasöründen aç.
 
@@ -109,24 +179,55 @@ Masaüstündeki MissionPlanner-latest klasöründen aç.
    bunu Relative'e çevirmeye kalkarsa görev kayar.
 4) Uçağa bağlıyken Write WPs ile yükle
 
-Mission Planner'ın kendi simülasyonu da var (Simulation sekmesi), ama
-ölçüm betiği WSL'deki tlog'a bakıyor.
+DİKKAT: aşağıdaki AIRSPEED_CRUISE hesabı SITL'e özel. Gerçek uçakta
+gösterge/gerçek dönüşümü ders kitabındaki 1/sqrt(sigma); 1/sigma kuralı
+SITL'in pitot davranışı. Gerçek uçağa SITL için hesaplanmış hızı yazma.
 
 
---- SITL'DE ÖLÇÜLEN DOĞRULAMA (2026-09-01) ---
+--- SITL'DE ÖLÇÜLEN DOĞRULAMA ---
 
-Rüzgâr modelinin tahmini ile gerçek uçuş:
+Rüzgâr modelinin tahmini ile gerçek uçuş, beş koşu:
 
-  sakin hava        tahmin  882.8 s   ölçülen  889.8 s   -0.8 %
-  8 m/s kuzeyden    tahmin 1080.3 s   ölçülen 1088.3 s   -0.7 %
-  8 m/s batıdan     tahmin  818.4 s   ölçülen  830.0 s   -1.4 %
+  rota                 rüzgâr    tahmin     ölçülen     hata
+  Alpler   26 km    0 / 8 m/s    882.8 s    889.8 s    -0.8 %
+  İstanbul 6.3 km       8 m/s    240.7 s    239.0 s    +0.7 %
+  Şile     12.6 km      13 m/s    514.0 s    515.7 s    -0.3 %
+  Alpler   102 km       14 m/s   4229.8 s   4267.1 s   -0.9 %
+  Alpler   120 km       14 m/s   5164.4 s   5177.8 s   -0.3 %
 
-Önemli: model GERÇEK hava hızı ister. VFR_HUD'ın verdiği GÖSTERGE hava
-hızıdır ve 850 m'de gerçek hız onun %4 üstündedir. Gösterge hızıyla
-beslendiğinde hata %6.7 çıktı, gerçek hızla %0.8.
+Uçulan mesafe planlanana %0.2 içinde oturuyor -- WP_RADIUS 50 m ile köşe
+kesmesine ve görev dosyasının 5 m toleranslı seyreltmesine rağmen.
 
-Uçulan mesafe 26.56 km, planlanan 26.39 km (+%0.6) -- WP_RADIUS 50 m ile
-köşe kesmesine ve görev dosyasının 5 m toleranslı seyreltmesine rağmen.
+Kalan hata rüzgârda değil, sabit hava hızı varsayımında: gerçek uçak
+tırmanışta hız kaybediyor. Kalkış sonrası ilk bacak %8-22 sapıyor,
+karşı rüzgârlı uzun bacak %1-2.
+
+
+--- EN KRİTİK AYAR: HAVA HIZI ---
+
+Model GERÇEK hava hızı (TAS) ister; AIRSPEED_CRUISE ise GÖSTERGE hızı
+(IAS) alır. Dönüşüm:
+
+  gösterge = gerçek * sigma        sigma = (1 - 2.25577e-5 * kot)^4.2559
+
+DİKKAT: sqrt(sigma) DEĞİL. Ders kitabı bağıntısı TAS = IAS/sqrt(sigma)
+der ama SITL'de ölçülen oran bunun tam iki katı, yani 1/sigma. 2026-09-04,
+102 km'lik rotada yedi kot kuşağında ölçüldü:
+
+  kot(m)   ölçülen   1/sqrt(sigma)   1/sigma
+    300     1.054       1.027         1.055
+    900     1.108       1.053         1.109
+   1500     1.171       1.084         1.176
+   2100     1.228       1.115         1.229
+
+Yanlış bağıntıyla AIRSPEED_CRUISE 26.44 seçilmişti; uçak 29.6 m/s uçtu ve
+tahmin %6.7 saptı. 24.99'a düzeltilince uçak 27.9 m/s uçtu, hata %0.9.
+
+Ortalama kot planlayıcının çıktısında yazıyor; sigma'yı ondan hesapla.
+
+Gerçek hava hızı SENSÖRDEN okunmaz: ARSP.Airspeed gösterge hızıdır.
+Gerçeği yer hızı vektöründen rüzgâr çıkarılarak bulunuyor -- sensörden
+bağımsız ve fizik gereği doğru. tools/log_report.py bunu yapıyor.
 
 
 --- SITL BAŞLAMIYORSA: ÖNCEKİ OTURUM AÇIK KALMIŞTIR ---
@@ -153,41 +254,29 @@ Not: pkill kendi komut zincirini de öldürebiliyor; tek satırda başka
 komutla birleştirme, ayrı çalıştır.
 
 
---- output add NE İŞE YARIYOR ---
+--- MAVProxy ÇIKIŞLARI (--out) NE İŞE YARIYOR ---
 
 MAVProxy bir MAVLink dağıtıcısı. Uçakla tek bağlantı kuruyor
 (--master tcp:127.0.0.1:5760), sonra bu akışın KOPYALARINI istenen
-adreslere yolluyor. Her adrese "çıkış" deniyor.
+adreslere yolluyor. Her adrese "çıkış" deniyor. Yukarıdaki YOL B bunu
+kullanıyor: betik uçağa değil, MAVProxy'nin bir çıkışına bağlanıyor.
 
-Varsayılan çıkışlar 127.0.0.1:14550 ve 14551 - ama buradaki "aynı
-makine" WSL. Mission Planner Windows'ta, ayrı ağ alanında, o yüzden
-varsayılan çıkışları göremiyor.
+Başlatma komutuna gömmek (tercih edilen):
 
-  output add 172.27.128.1:14550     Windows'a kopya yolla
-  output list                        mevcut cikislari gor
-  output remove 2                    sil (numara list'te)
+  --out udp:127.0.0.1:14551          betik icin, WSL icinde
+  --out udp:172.27.128.1:14550       Mission Planner icin, Windows'ta
+
+MAVProxy istemindeyken elle de eklenebiliyor:
+
+  output add 172.27.128.1:14550
+  output list
+  output remove 2
 
 172.27.128.1 = WSL'den görünen Windows host IP'si. SABİT DEĞİL, WSL
 yeniden başlayınca değişir. Öğrenmek için WSL'de:
 
   ip route show default | awk '{print $3}'
 
-Her seferinde yazmamak için başlatma komutuna gömülebilir:
-
-  --out=udp:172.27.128.1:14550
-
 Mission Planner tarafı: sağ üstte UDP seç (UDPCl değil), CONNECT, port
 sorarsa 14550. Veri gelmezse güvenlik duvarıdır - Mission Planner'ı
 yönetici olarak aç.
-
-
---- HOME KOORDİNATI GÖREVE AİT OLMALI ---
-
-sim_vehicle'daki -l enlem,boylam,irtifa,yön değeri görevin home'u ile
-aynı yerde olmalı; yoksa uçak görevden yüzlerce km uzakta doğar.
-
-Görev dosyasının 2. satırı (indeks 0) home satırıdır, 9. ve 10. alanlar
-enlem ve boylam. İrtifa ise rotanın EN DÜŞÜK kotunun altında olmalı.
-
-  İstanbul görevi:  -l 41.12113,29.04606,15,0
-  Alpler görevi:    -l 46.08,14.28,450,0

@@ -7,9 +7,9 @@ import pytest
 
 from app.mission import (ALTITUDE_MARGIN, Constraints, FlatEdge, Zone,
                          agl_profile, auto_altitude, build_env, build_env_2d,
-                         geo_window, plan_mission, plan_mission_2d,
-                         sample_mission, waypoint_altitudes,
-                         waypoint_headings)
+                         density_ratio, geo_window, indicated_airspeed,
+                         plan_mission, plan_mission_2d, sample_mission,
+                         waypoint_altitudes, waypoint_headings)
 from app.mission import (GOOD_ENOUGH, ITERATION_LADDER, SEED_TRIES,
                          _best_of_seeds, _budgets, _plan_leg, _seeds,
                          compass_to_yaw, wind_cost, yaw_to_compass)
@@ -794,3 +794,55 @@ class TestBestOfSeeds:
         _best_of_seeds(self._fake({1: just_under, 2: just_over}, seen),
                        [1, 2], bound)
         assert seen == [1]                   # ilki yetti
+
+
+class TestIndicatedAirspeed:
+    """Planlayicinin GERCEK hava hizini otopilotun GOSTERGE hizina cevirir.
+
+    Pitot hiz degil dinamik basinc olcuyor; irtifada hava seyrek oldugu
+    icin ayni gercek hiz daha dusuk okunuyor. Ceviri yapilmazsa ucak
+    planlanandan hizli ucuyor ve sure tahmini tutmuyor - 1112 m'de fark
+    %10, olculdu.
+    """
+
+    def test_sea_level_changes_nothing(self):
+        assert density_ratio(0.0) == pytest.approx(1.0)
+        assert indicated_airspeed(28.0, 0.0) == pytest.approx(28.0)
+
+    def test_indicated_falls_with_altitude(self):
+        low = indicated_airspeed(28.0, 200.0)
+        high = indicated_airspeed(28.0, 2000.0)
+        assert high < low < 28.0
+
+    def test_measured_values(self):
+        # SITL'de dogrulanan iki rota; sayilar ucusla teyit edildi.
+        assert indicated_airspeed(28.0, 157.0) == pytest.approx(27.58, abs=0.01)
+        assert indicated_airspeed(28.0, 1112.0) == pytest.approx(25.13, abs=0.01)
+
+    def test_relation_is_sigma_not_its_root(self):
+        # En kritik nokta: ders kitabi sqrt(sigma) der, SITL'de olculen
+        # oran onun TAM IKI KATI sapiyor. sqrt'e donen bir degisiklik bu
+        # testi kirar.
+        altitude = 2100.0
+        sigma = density_ratio(altitude)
+        assert indicated_airspeed(28.0, altitude) == pytest.approx(28.0 * sigma)
+        assert indicated_airspeed(28.0, altitude) != pytest.approx(
+            28.0 * math.sqrt(sigma), abs=0.05)
+
+    def test_scales_with_the_planned_speed(self):
+        assert (indicated_airspeed(30.0, 1112.0)
+                == pytest.approx(indicated_airspeed(28.0, 1112.0) * 30 / 28))
+
+    def test_below_sea_level_is_denser(self):
+        # Kot negatif olabiliyor: arazi verisi deniz altini da tasiyor.
+        assert density_ratio(-100.0) > 1.0
+
+    def test_zero_speed_is_refused(self):
+        with pytest.raises(ValueError, match="pozitif"):
+            indicated_airspeed(0.0, 500.0)
+
+    def test_outside_the_troposphere_is_refused(self):
+        # Baz negatife dusup kesirli us anlamsizlasiyor; sessiz NaN yerine
+        # acik hata.
+        with pytest.raises(ValueError, match="troposfer"):
+            density_ratio(50000.0)

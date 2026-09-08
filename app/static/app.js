@@ -1076,6 +1076,7 @@ function clearStats() {
   setTile("statTime", DASH, "");
   setTile("statAgl", DASH, "m");
   setTile("statLegs", DASH, "");
+  setTile("statCruise", DASH, "m/s");
   $("tileAgl").className = "tile";
   $("timeKey").textContent = "ucus suresi";
   $("windNote").textContent = "ruzgar yok, sure sakin hava";
@@ -1105,11 +1106,21 @@ function downloadMission() {
   link.download = "gorev_" + stamp + ".waypoints";
   link.click();
   URL.revokeObjectURL(link.href);
+  // Otopilota yazilacak hiz, arayuze girilenden FARKLI: planlayici gercek
+  // hava hiziyla calisiyor, AIRSPEED_CRUISE gosterge hizi istiyor ve ikisi
+  // kotla ayrisiyor. Ceviriyi kullaniciya birakmak unutuluyor, o yuzden
+  // sayi indirme aninda ekranda.
+  const sitl = missionFile.airspeed_cruise === null ? "" :
+    " ArduPilot icin: AIRSPEED_CRUISE " +
+    missionFile.airspeed_cruise.toFixed(2) + " (girdigin " +
+    Number($("speed").value).toFixed(1) + " m/s GERCEK hiz, ortalama " +
+    missionFile.mean_altitude.toFixed(0) + " m kotta gosterge bu eder), " +
+    "SITL home irtifasi " + missionFile.home_alt.toFixed(0) + " m.";
   setStatus("Gorev dosyasi indirildi: " + missionFile.points +
             " nokta, rotadan en fazla " +
             missionFile.deviation.toFixed(1) + " m sapma (tolerans " +
             missionFile.tolerance.toFixed(0) + " m). Irtifalar MUTLAK " +
-            "(MSL). Ilk satir kalkis.", "");
+            "(MSL). Ilk satir kalkis." + sitl, "");
 }
 
 // --- planlama ----------------------------------------------------------
@@ -1286,6 +1297,12 @@ function fillStats(data) {
   setTile("statLength", (data.cost / 1000).toFixed(2), "km");
   showWind(data);
   setTile("statLegs", String(legs.length), "");
+  // Otopilota yazilacak sayi arayuze GIRILENDEN farkli: planlayici gercek
+  // hava hiziyla calisiyor, AIRSPEED_CRUISE gosterge hizi istiyor. Ceviriyi
+  // kullaniciya birakmak unutuluyor, o yuzden hazir rakam ekranda duruyor.
+  setTile("statCruise",
+          missionFile && missionFile.airspeed_cruise !== null
+            ? missionFile.airspeed_cruise.toFixed(2) : DASH, "m/s");
 
   if (!data.agl) {
     setTile("statAgl", DASH, "");

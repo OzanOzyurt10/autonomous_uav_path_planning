@@ -21,9 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.mission import (Constraints, Zone, agl_profile, auto_altitude,
                          build_env, build_env_2d, compass_to_yaw, geo_window,
-                         plan_mission, plan_mission_2d, sample_leg,
-                         sample_mission, waypoint_altitudes, waypoint_headings,
-                         yaw_to_compass)
+                         indicated_airspeed, plan_mission, plan_mission_2d,
+                         sample_leg, sample_mission, waypoint_altitudes,
+                         waypoint_headings, yaw_to_compass)
 from src.geo import Frame
 from src.terrain import MissingTiles, TileStore, tile_name
 from src.terrarium import ElevationUnavailable, TerrariumSource
@@ -70,6 +70,9 @@ WPL_TOLERANCE = 5.0
 # Seyir kotu artik girilmiyor, zeminden turetiliyor. Bu deger yalnizca
 # arazi verisi hic yokken kullaniliyor: zemin bilinmedigi icin MSL.
 NO_TERRAIN_CRUISE = 1000.0
+# SITL'in zemini DUZ ve home irtifasinda; rota home'un altina inerse ucak
+# yerin altina inmeye calisir. Home rotanin en dususunun bu kadar altina.
+HOME_MARGIN = 50.0
 # Otomatik seyir kotunun uzerinde birakilan manevra payi. Tavan bunun
 # altinda kalirsa is_free waypointi "harita disinda" sayar.
 CLIMB_ROOM = 300.0
@@ -384,7 +387,8 @@ def plan_payload(body):
                          float(body.get("wind_from", 0.0)))
     # Gorev dosyasi yukun icinde gidiyor: ayri uc nokta acmak sunucuda
     # plan saklamayi gerektirirdi. Seyreltilmis dosya birkac KB.
-    mission_file = (_mission_payload(poses, frame, terrain)
+    mission_file = (_mission_payload(poses, frame, terrain,
+                                     constraints.speed)
                     if mission.found else None)
     failed = [index + 1 for index, leg in enumerate(mission.legs)
               if not leg.found]
@@ -469,7 +473,7 @@ def _wind_payload(poses, airspeed, speed, from_deg):
     return payload
 
 
-def _mission_payload(poses, frame, terrain):
+def _mission_payload(poses, frame, terrain, airspeed):
     """Yogun rotayi otopilotun yukleyebilecegi gorev dosyasina cevirir.
 
     Home kotu ZEMIN olmali, ucus kotu degil: home kalkis noktasi. Arazi
@@ -478,7 +482,8 @@ def _mission_payload(poses, frame, terrain):
     """
     if not poses:
         return {"text": "", "points": 0, "deviation": None,
-                "tolerance": WPL_TOLERANCE}
+                "tolerance": WPL_TOLERANCE, "airspeed_cruise": None,
+                "mean_altitude": None, "home_alt": None}
 
     kept = simplify(poses, WPL_TOLERANCE)
     waypoints = []
@@ -492,10 +497,20 @@ def _mission_payload(poses, frame, terrain):
         ground = terrain.elevation_at(poses[kept[0]][0], poses[kept[0]][1])
         home = (home[0], home[1], ground)
 
+    # Ornekler esit aralikli (step = hiz * FRAME_SECONDS), o yuzden duz
+    # ortalama zaten mesafeye gore agirlikli.
+    altitudes = [pose[2] for pose in poses]
+    mean_altitude = sum(altitudes) / len(altitudes)
     return {"text": mission_text(waypoints, home=home),
             "points": len(waypoints),
             "deviation": deviation(poses, kept),
-            "tolerance": WPL_TOLERANCE}
+            "tolerance": WPL_TOLERANCE,
+            # Otopilot GOSTERGE hizi istiyor, planlayici GERCEK hizla
+            # calisiyor; ikisi kotla ayrisiyor ve arada cevirmek
+            # kullaniciya birakilirsa unutuluyor.
+            "airspeed_cruise": indicated_airspeed(airspeed, mean_altitude),
+            "mean_altitude": mean_altitude,
+            "home_alt": min(altitudes) - HOME_MARGIN}
 
 
 def _zones_from(body, frame, bounds):
