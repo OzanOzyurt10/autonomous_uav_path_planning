@@ -18,10 +18,10 @@ from src.environment3d import Cylinder, Environment3D
 from src.geo import METRES_PER_DEGREE, Frame
 from src.rrt_star import plan as plan2d 
 from src.rrt_star import shortcut as shortcut2d
-from src.rrt_star import CostModel
+from src.rrt_star import CostModel, LENGTH
 from src.rrt_star3d import plan3d, shortcut
 from src.terrain import Terrain
-from src.wind import flight_time
+from src.wind import as_field, flight_time
 import random
 
 GRAVITY = 9.80665
@@ -402,7 +402,8 @@ def _best_of_seeds(plan_one, seeds, lower_bound: float):
 
 
 def plan_mission_2d(waypoints, env: Environment, constraints: Constraints,
-                    altitude: float, headings=None) -> Mission:
+                    altitude: float, headings=None,
+                    model: CostModel = LENGTH) -> Mission:
     """Yatay duzlemde bacak bacak planlar; irtifa sabit seyir irtifasi.
 
     Arazi hesaba KATILMIYOR - bu 2B planlama. Arazi verisi varsa rotanin
@@ -426,21 +427,29 @@ def plan_mission_2d(waypoints, env: Environment, constraints: Constraints,
                                       max_iterations=budget,
                                       goal_bias=0.10,
                                       max_edge_length=10 * constraints.rho,
-                                      rng=random.Random(seed)),
+                                      rng=random.Random(seed),
+                                      model=model),
                 constraints.max_iterations)
             if not result.found:
                 return False, [], math.inf
-            edges = [FlatEdge(path, altitude)
-                     for path in shortcut2d(result.edges, env,
-                                            constraints.rho, step)]
-            return True, edges, sum(edge.length for edge in edges)
+            # Maliyet SARILMADAN once olculuyor: model 2B Dubins kenari
+            # icin kuruldu, FlatEdge'in ucuncu alani artik irtifa.
+            paths = shortcut2d(result.edges, env, constraints.rho, step,
+                               model=model)
+            return (True, [FlatEdge(path, altitude) for path in paths],
+                    sum(model.of_edge(path) for path in paths))
 
-        # Alt sinir YATAY: FlatEdge.length yatay Dubins uzunlugu.
-        found, edges, cost = _best_of_seeds(
-            plan_one, seeds, math.dist(start[:2], goal[:2]))
+        # Alt sinir modelden geciyor: maliyet saniye olabilir, ham metreyi
+        # esikle karsilastirmak ilk tohumda yanlis "yeterince iyi" verir.
+        found, edges, _ = _best_of_seeds(
+            plan_one, seeds,
+            model.lower_bound(math.dist(start[:2], goal[:2])))
+        # Leg.cost her zaman METRE: arayuz onu uzunluk olarak gosteriyor
+        # ve duration ondan turuyor.
+        length = sum(edge.length for edge in edges) if found else math.inf
         legs.append(Leg((start[0], start[1], altitude, start[2]),
                         (goal[0], goal[1], altitude, goal[2]),
-                        edges, found, cost))
+                        edges, found, length))
 
     found = all(leg.found for leg in legs)
     cost = sum(leg.cost for leg in legs) if found else math.inf
@@ -449,7 +458,7 @@ def plan_mission_2d(waypoints, env: Environment, constraints: Constraints,
 
 
 def plan_mission(waypoints, env: Environment3D, constraints: Constraints,
-                 headings=None) -> Mission:
+                 headings=None, model: CostModel = LENGTH) -> Mission:
     """Waypoint dizisini bacak bacak planlar ve tek rotaya birlestirir.
 
     env, constraints.clearance ile kurulmus olmali - build_env bunu yapiyor.
@@ -472,18 +481,24 @@ def plan_mission(waypoints, env: Environment3D, constraints: Constraints,
                                       goal_bias=0.10,
                                       max_edge_length=10 * constraints.rho,
                                       refine_steps=8,
-                                      rng=random.Random(seed)),
+                                      rng=random.Random(seed),
+                                      model=model),
                 constraints.max_iterations)
             if not result.found:
                 return False, [], math.inf
             edges = shortcut(result.edges, env, constraints.rho,
-                             constraints.max_climb, step, 8)
-            return True, edges, sum(edge.length for edge in edges)
+                             constraints.max_climb, step, 8, model=model)
+            return True, edges, sum(model.of_edge(edge) for edge in edges)
 
-        # Alt sinir 3B: DubinsPath3D.length yatay uzunluk / cos(gamma).
-        found, edges, cost = _best_of_seeds(
-            plan_one, seeds, math.dist(start[:3], goal[:3]))
-        legs.append(Leg(start, goal, edges, found, cost))
+        # Alt sinir modelden geciyor: maliyet saniye olabilir, ham metreyi
+        # esikle karsilastirmak ilk tohumda yanlis "yeterince iyi" verir.
+        found, edges, _ = _best_of_seeds(
+            plan_one, seeds,
+            model.lower_bound(math.dist(start[:3], goal[:3])))
+        # Leg.cost her zaman METRE: arayuz onu uzunluk olarak gosteriyor
+        # ve duration ondan turuyor.
+        length = sum(edge.length for edge in edges) if found else math.inf
+        legs.append(Leg(start, goal, edges, found, length))
 
     found = all(leg.found for leg in legs)
     cost = sum(leg.cost for leg in legs) if found else math.inf
@@ -530,27 +545,28 @@ def agl_profile(poses, terrain: Terrain | None):
         return []
     return [pose[2] - terrain.elevation_at(pose[0], pose[1]) for pose in poses]
 
-def wind_cost(airspeed: float, wind, step: float,
-              flat: bool = False) -> CostModel:
+def wind_cost(airspeed: float, wind, step: float, flat: bool = False,
+              altitude: float = 0.0) -> CostModel:
     """Ruzgar altinda SUREYI kucultmek icin maliyet modeli.
 
-    Planlayici bunu alinca mesafe yerine sure minimize ediyor: kuyruk
-    ruzgarindan yararlanmak icin dolasmak, kisa ama karsi ruzgarli bir
-    rotaya tercih edilebilir hale geliyor. shortcut da ayni modeli alarak
-    ayni seyi kisaltiyor.
+    Planlayici bunu alinca mesafe yerine sure minimize ediyor. Tekduze
+    ruzgarda rota DEGISMIYOR (Zermelo); kazanc irtifayla degisen alandan
+    cikiyor - kuyruk ruzgarina tirmanmak, karsi ruzgarda alcalmak.
+    shortcut da ayni modeli aliyor, yoksa kazanci geri yassiltirdi.
     """
+    field = as_field(wind)
     # Ulasilabilecek en yuksek yer hizi; alt sinir bunun uzerine kuruluyor.
-    fastest = airspeed + math.hypot(wind[0], wind[1])
+    fastest = airspeed + field.strongest()
 
     def of_edge(edge):
         poses = edge.sample(step)
-        # 2B kenarin ucuncu alani YAW, irtifa degil. Duz kabul edip sifir
-        # koymazsak flight_time onu tirmanma acisi sanar ve sure sessizce
-        # yanlis cikar.
+        # 2B kenarin ucuncu alani YAW, irtifa degil. Seyir kotunu
+        # koymazsak flight_time onu tirmanma acisi sanar, ustelik alan
+        # ruzgari yanlis irtifadan okur.
         if flat:
-            poses = [(pose[0], pose[1], 0.0) for pose in poses]
+            poses = [(pose[0], pose[1], altitude) for pose in poses]
         try:
-            return flight_time(poses, airspeed, wind)
+            return flight_time(poses, airspeed, field)
         except ValueError:
             # Yan ruzgar hava hizini asiyor: kenar hatali degil, UCULAMAZ.
             return math.inf

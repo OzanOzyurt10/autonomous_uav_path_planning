@@ -8,3 +8,8 @@ rapor
 results/*.html
 data
 gorev_ornek.waypoints
+
+# PyInstaller ciktilari: her derlemede yeniden uretiliyor, 45 MB.
+build/
+dist/
+*.spec

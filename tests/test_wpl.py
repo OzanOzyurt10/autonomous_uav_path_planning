@@ -9,8 +9,9 @@ import math
 
 import pytest
 
-from src.wpl import (FRAME_GLOBAL, NAV_TAKEOFF, NAV_WAYPOINT, VERSION_LINE,
-                     deviation, mission_text, simplify)
+from src.wpl import (FRAME_GLOBAL, NAV_LOITER_TIME, NAV_TAKEOFF,
+                     NAV_WAYPOINT, VERSION_LINE, deviation, mission_text,
+                     simplify)
 
 
 def _straight(count, step=100.0):
@@ -164,3 +165,48 @@ class TestDeviation:
         points = [(0.0, 0.0, 0.0), (500.0, 300.0, 0.0), (1000.0, 0.0, 0.0)]
         # Kose atilinca sapma kosenin duz cizgiye uzakligi kadar.
         assert deviation(points, [0, 2]) == pytest.approx(300.0)
+
+
+class TestLoiter:
+    """Bekleme noktasi NAV_WAYPOINT yerine NAV_LOITER_TIME oluyor.
+
+    Sure param1'de tasiniyor; yaricap sifir birakiliyor ki otopilot kendi
+    WP_LOITER_RAD'ini kullansin - o deger ucaga gore dogru olan.
+    """
+
+    POINTS = [(1.0, 2.0, 300.0), (1.1, 2.1, 310.0), (1.2, 2.2, 320.0)]
+
+    def _rows(self, loiter=None):
+        text = mission_text(self.POINTS, home=(1.0, 2.0, 200.0),
+                            loiter=loiter)
+        return [line.split("\t") for line in text.splitlines()[1:]]
+
+    def test_without_loiter_nothing_changes(self):
+        assert all(row[3] != str(NAV_LOITER_TIME) for row in self._rows())
+
+    def test_seconds_land_in_param1(self):
+        rows = self._rows([0.0, 45.0, 0.0])
+        held = [row for row in rows if row[3] == str(NAV_LOITER_TIME)]
+        assert len(held) == 1
+        assert float(held[0][4]) == pytest.approx(45.0)
+
+    def test_only_the_marked_point_holds(self):
+        rows = self._rows([0.0, 45.0, 0.0])
+        # home, kalkis ve iki duz waypoint NAV_WAYPOINT kalmali
+        assert [row[3] for row in rows] == [
+            str(NAV_WAYPOINT), str(NAV_TAKEOFF), str(NAV_WAYPOINT),
+            str(NAV_LOITER_TIME), str(NAV_WAYPOINT)]
+
+    def test_position_and_altitude_are_unchanged(self):
+        plain = self._rows()
+        held = self._rows([0.0, 45.0, 0.0])
+        for a, b in zip(plain, held):
+            assert a[8:11] == b[8:11]           # enlem, boylam, kot
+
+    def test_length_mismatch_is_refused(self):
+        with pytest.raises(ValueError, match="uyusmuyor"):
+            self._rows([0.0, 45.0])
+
+    def test_negative_wait_is_refused(self):
+        with pytest.raises(ValueError, match="negatif"):
+            self._rows([0.0, -5.0, 0.0])

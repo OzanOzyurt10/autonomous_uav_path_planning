@@ -5,6 +5,17 @@
 // degismez. Metreye cevirme plan aninda, sunucunun sectigi cerceveyle
 // yapiliyor.
 let waypoints = [];        // {lat, lon, alt}
+// Cekilen tahmin profili: [[MSL yukseklik, hiz, GELDIGI yon], ...].
+// Kullanici ruzgari elle degistirirse dusuyor - ekrandaki sayi ile
+// planlamanin kullandigi fizik ayrisirsa hangisinin gecerli oldugu
+// anlasilmaz olur.
+let windProfile = null;
+let liveWind = false;      // anahtar acik mi
+let liveTimer = null;      // waypoint degisiminden sonraki bekleme
+let liveAt = null;         // profilin cekildigi nokta {lat, lon}
+const LIVE_DELAY = 700;    // ms; waypoint eklerken her tikta istek atmamak
+const LIVE_MIN_MOVE_KM = 1.0;
+let liveSeq = 0;           // ucan isteklerin sirasi; eskisi yenisini ezmesin
 let legs = [];             // [{found, cost, path}] - yol YEREL metre
 let path = [];             // butun bacaklarin birlesimi, yerel metre
 let frame = null;          // {lat, lon, midLat, lonScale}
@@ -970,7 +981,7 @@ function activeMode() {
 // --- waypoint listesi --------------------------------------------------
 function addWaypoint(lat, lon) {
   // alt ve hdg null iken otomatik: kot zeminden, bas acisi aciortaydan.
-  waypoints.push({ lat: lat, lon: lon, alt: null, hdg: null });
+  waypoints.push({ lat: lat, lon: lon, alt: null, hdg: null, hold: 0 });
   invalidatePlan();
   renderList();
   updateOverlays();
@@ -1027,7 +1038,19 @@ function renderList() {
         ' placeholder="' + headingOf(index).toFixed(0) + '" value="' +
         (w.hdg === null ? "" : String(w.hdg)) +
         '" title="bos birak = otomatik (aciortay)"></td>' +
+      '<td><input type="number" step="10" min="0" max="3600" class="hold"' +
+        ' placeholder="0" value="' + (w.hold ? String(w.hold) : "") +
+        '" title="bu noktada beklenecek saniye; bos = beklemez"></td>' +
       '<td class="drop"><button title="sil">&times;</button></td>';
+    const holdInput = row.querySelector("input.hold");
+    holdInput.addEventListener("change", (event) => {
+      const text = event.target.value.trim();
+      // Bekleme rotanin GEOMETRISINI degistirmiyor, yalnizca sureyi ve
+      // gorev dosyasini; yine de yeniden planlamak gerekiyor cunku ikisi
+      // de plan yanitindan geliyor.
+      w.hold = text === "" ? 0 : Math.max(0, Number(text));
+      invalidatePlan();
+    });
     const hdgInput = row.querySelector("input.hdg");
     hdgInput.addEventListener("change", (event) => {
       const text = event.target.value.trim();
@@ -1061,10 +1084,40 @@ function renderList() {
     (waypoints.length && arming !== "waypoint") ? "none" : "block";
   $("wpCount").textContent = String(waypoints.length);
   $("plan").disabled = waypoints.length < 2;
+  // Ruzgar waypointlerden aliniyor: liste her degistiginde tazelenmeli.
+  scheduleLiveWind();
 }
 
 // --- durum kutulari ----------------------------------------------------
 const DASH = "–";
+
+// Ucak ve emniyet ayarlari. Goreve ait DEGIL, o yuzden saklaniyorlar.
+const SETUP_FIELDS = ["speed", "bank", "climb", "clearance"];
+const SETUP_KEY = "ucak-ayarlari";
+
+function saveSetup() {
+  const values = {};
+  SETUP_FIELDS.forEach((id) => { values[id] = $(id).value; });
+  try {
+    localStorage.setItem(SETUP_KEY, JSON.stringify(values));
+  } catch (error) {
+    // Gizli sekmede localStorage yazmiyor; ayarlar o oturumda kalir,
+    // uygulama calismaya devam eder.
+  }
+}
+
+function restoreSetup() {
+  let values = null;
+  try {
+    values = JSON.parse(localStorage.getItem(SETUP_KEY) || "null");
+  } catch (error) {
+    values = null;
+  }
+  if (!values) return;
+  SETUP_FIELDS.forEach((id) => {
+    if (values[id] !== undefined) $(id).value = values[id];
+  });
+}
 
 function setTile(id, value, unit) {
   $(id).innerHTML = unit ? value + '<span class="u">' + unit + "</span>"
@@ -1130,18 +1183,23 @@ async function requestPlan() {
   stopPlayback();
 
   const body = {
-    // Ucuncu eleman kot sabitlemesi (AGL), dorduncu bas acisi (pusula);
-    // null olanlarda sunucu otomatige dusuyor.
-    waypoints: waypoints.map((w) => [w.lat, w.lon, w.alt, w.hdg]),
+    // Ucuncu eleman kot sabitlemesi (AGL), dorduncu bas acisi (pusula),
+    // besincisi bekleme (saniye); null olanlarda sunucu otomatige dusuyor.
+    waypoints: waypoints.map((w) => [w.lat, w.lon, w.alt, w.hdg, w.hold || 0]),
     speed: Number($("speed").value),
     bank_deg: Number($("bank").value),
     climb_deg: Number($("climb").value),
     clearance: Number($("clearance").value),
-    iterations: Number($("iterations").value),
-    seed: Number($("seed").value),
+    // Yineleme butcesi ve tohum artik arayuzde yok: kullanicinin onlari
+    // secmek icin bir dayanagi yoktu ve cok tohumlu planlamadan sonra
+    // tohumun anlami busbutun kalmadi. Sunucu varsayilanlari geceriyor.
     ignore_terrain: $("flat").checked,
     wind_speed: Number($("windSpeed").value),
     wind_from: Number($("windFrom").value),
+    objective: objective(),
+    // null iken sunucu guc yasasina dusuyor; iki durum icin ayri alan
+    // gerekmiyor.
+    wind_profile: windProfile,
     zones: zones.map((z) => ({ lat: z.lat, lon: z.lon, radius_m: z.radius })),
     want_terrain: true
   };
@@ -1257,6 +1315,118 @@ function clockText(seconds) {
          String(Math.round(seconds % 60)).padStart(2, "0");
 }
 
+function windPoint() {
+  // Tahmin tek noktadan aliniyor ama bacaklar kilometrelerce uzuyor;
+  // waypointlerin ortalamasi rotayi en iyi temsil eden tek nokta.
+  // Waypoint yoksa null: haritanin ortasindan cekmek "nerenin ruzgari"
+  // sorusuna cevap veremeyen gorunmez bir karar olurdu.
+  if (!waypoints.length) return null;
+  const lat = waypoints.reduce((sum, w) => sum + w.lat, 0) / waypoints.length;
+  const lon = waypoints.reduce((sum, w) => sum + w.lon, 0) / waypoints.length;
+  return { lat: lat, lon: lon };
+}
+
+function coordText(point) {
+  return Math.abs(point.lat).toFixed(4) + (point.lat < 0 ? "G" : "K") + " " +
+         Math.abs(point.lon).toFixed(4) + (point.lon < 0 ? "B" : "D");
+}
+
+function kmBetween(first, second) {
+  // Duz yaklasim; bu olcekte hata metre mertebesinde ve karsilastirma
+  // esigi zaten 1 km.
+  const north = (second.lat - first.lat) * 111.32;
+  const east = (second.lon - first.lon) * 111.32 *
+    Math.cos(first.lat * Math.PI / 180);
+  return Math.hypot(north, east);
+}
+
+async function fetchWind(point) {
+  const seq = ++liveSeq;
+  setStatus("ruzgar tahmini cekiliyor: " + coordText(point));
+  try {
+    const response = await fetch("/api/wind?lat=" + point.lat.toFixed(4) +
+                                 "&lon=" + point.lon.toFixed(4));
+    const data = await response.json();
+    // Waypointler istek ucarken degistiyse bu cevabin sirasi gecti; eski
+    // profilin yenisini ezmesi sessiz bir gerileme olurdu.
+    if (seq !== liveSeq) return false;
+    if (!data.ok) throw new Error(data.message || "tahmin alinamadi");
+    windProfile = data.levels;
+    $("windSpeed").value = data.speed.toFixed(1);
+    $("windFrom").value = Math.round(data.from_deg);
+    // Hangi noktanin ruzgari oldugu YAZILMALI: waypointlerin ortalamasi
+    // makul bir secim ama gorunmez kalirsa kullanici neye baktigini
+    // bilmiyor.
+    $("windNote").innerHTML = "<b>" + coordText(point) + "</b> tahmini " +
+      data.time + " UTC &mdash; " + data.levels.length + " seviye, zemin " +
+      Math.round(data.elevation) + " m";
+    $("windNote").style.color = "";
+    setStatus("ruzgar tahmini alindi");
+    return true;
+  } catch (error) {
+    if (seq !== liveSeq) return false;
+    windProfile = null;
+    setStatus("ruzgar tahmini alinamadi: " + error.message, "bad");
+    return false;
+  }
+}
+
+function setLiveWind(on) {
+  liveWind = on;
+  // Kutular donuyor: acikken oradaki sayilar cekilen tahminin yuzey
+  // degeri, kullanicinin girdisi degil. Yazilabilir birakmak ekrandaki
+  // sayi ile planlamanin kullandigi fizigi ayirirdi.
+  ["windSpeed", "windFrom"].forEach((id) => { $(id).disabled = on; });
+  liveAt = null;
+  if (!on) {
+    windProfile = null;
+    $("windNote").textContent = "elle girilen ruzgar";
+    $("windNote").style.color = "";
+    return;
+  }
+  // Anlik veri sureyi kucultmek icin anlamli; kapali modda yalnizca
+  // sure okumasina girer ve kullanici "actim ama rota ayni" diyor.
+  document.querySelector("input[name=objective][value=time]").checked = true;
+  syncObjective();
+  scheduleLiveWind();
+}
+
+function scheduleLiveWind() {
+  if (!liveWind) return;
+  // Waypoint eklerken her tikta istek atmamak icin kullanici duruncaya
+  // kadar bekliyoruz.
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(refreshLiveWind, LIVE_DELAY);
+}
+
+async function refreshLiveWind() {
+  if (!liveWind) return;
+  const point = windPoint();
+  if (!point) {
+    $("windNote").textContent = "waypoint koy, ruzgar oradan alinacak";
+    $("windNote").style.color = "";
+    return;
+  }
+  // Tahmin izgarasi ~11 km; birkac yuz metrelik oynama icin yeniden
+  // cekmek bosuna istek.
+  if (windProfile && liveAt && kmBetween(liveAt, point) < LIVE_MIN_MOVE_KM) {
+    return;
+  }
+  if (await fetchWind(point)) liveAt = point;
+}
+
+function objective() {
+  return document.querySelector("input[name=objective]:checked").value;
+}
+
+// Sure modunda girilen sayi 10 metredeki ruzgar, ucusun gordugu ondan
+// buyuk. Etiket degismezse kullanici ayni kutuya iki farkli anlamda deger
+// girer ve fark sessiz kalir.
+function syncObjective() {
+  $("windSpeedLabel").textContent = objective() === "time"
+    ? "ruzgar m/s (yerden 10 m)" : "ruzgar m/s";
+}
+
 // Sure gostergesinin HANGI sure oldugunu yazmak zorundayiz. Ruzgarli ve
 // sakin hava suresi ayni gorunuyor ama %30 ayrisabiliyor; etiketsiz bir
 // sayi menzil hesabini sessizce yanlislar.
@@ -1269,11 +1439,28 @@ function showWind(data) {
     setTile("statTime", clockText(wind.duration), "sn");
     $("timeKey").textContent = "ucus suresi (ruzgarli)";
     const loss = wind.duration - data.duration;
-    note.innerHTML = wind.speed.toFixed(0) + " m/s " +
-      wind.from_deg.toFixed(0) + "&deg; yonunden &mdash; yer hizi <b>" +
+    // Profil acikken girilen deger 10 m'deki ruzgar; rotanin gercekte
+    // gordugu ortalamayi yazmazsak kullanici iki sayiyi karistirir.
+    const source = wind.planned
+      ? wind.speed.toFixed(0) + " m/s (10 m) &rarr; rota boyu <b>" +
+        wind.mean_speed.toFixed(0) + " m/s</b> "
+      : wind.speed.toFixed(0) + " m/s ";
+    note.innerHTML = source + wind.from_deg.toFixed(0) +
+      "&deg; yonunden &mdash; yer hizi <b>" +
       wind.min_speed.toFixed(0) + "-" + wind.max_speed.toFixed(0) +
       " m/s</b>, sakin havaya gore <b>" + (loss >= 0 ? "+" : "") +
-      Math.round(loss) + " sn</b>";
+      Math.round(loss) + " sn</b>" +
+      (wind.planned
+        ? " &mdash; <b>rotaya katildi</b>" +
+          (wind.source === "profil"
+            ? " (anlik veri" + (liveAt ? ", " + coordText(liveAt) : "") + ")"
+            : " (guc yasasi)")
+        : "");
+    // Sure modu secilip ruzgar sifirsa iki mod ayni sonucu verir. Sessiz
+    // kalirsak kullanici modun bozuk oldugunu saniyor.
+    if (wind.objective === "time" && !wind.planned) {
+      note.innerHTML += " &mdash; <b>ruzgar yok, iki mod ayni</b>";
+    }
     note.style.color = "";
     return;
   }
@@ -1574,6 +1761,19 @@ async function start() {
   $("layerOffline").addEventListener("click", () => setBasemap("offline"));
   $("toggle3d").addEventListener("click", toggle3d);
   $("flat").addEventListener("change", syncMode);
+  document.querySelectorAll("input[name=objective]").forEach((radio) => {
+    radio.addEventListener("change", syncObjective);
+  });
+  syncObjective();
+  $("liveWind").addEventListener("change", (event) => {
+    setLiveWind(event.target.checked);
+  });
+  // Ucak ozellikleri ucustan ucusa degismiyor; her acilista yeniden
+  // girmek zorunda kalmak en cok sikayet edilen seydi.
+  restoreSetup();
+  SETUP_FIELDS.forEach((id) => {
+    $(id).addEventListener("change", saveSetup);
+  });
   $("addWp").addEventListener("click", () =>
     setArming(arming === "waypoint" ? null : "waypoint"));
   $("addZone").addEventListener("click", () =>

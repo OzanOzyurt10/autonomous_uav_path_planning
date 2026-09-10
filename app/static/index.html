@@ -133,6 +133,45 @@
   .hint.warn { color: var(--warn); }
   .check { display: flex; align-items: center; gap: 7px; margin-top: 10px;
            font-size: 12px; color: var(--muted); cursor: pointer; }
+
+  /* Anahtar: acik/kapali bir DURUM, tek seferlik eylem degil. */
+  .switch { display: flex; align-items: center; gap: 9px; margin: 0 0 11px;
+            font-size: 12px; color: var(--muted); cursor: pointer; }
+  /* Kutu gizleniyor ve yerine bir span ciziliyor: ::after degistirilmis
+     eleman uzerinde her tarayicida cizilmiyor, span'de ciziliyor. */
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .track { flex: none; width: 32px; height: 18px; border-radius: 9px;
+                   background: var(--line-hi); position: relative;
+                   transition: background .15s; }
+  .switch .track::after { content: ""; position: absolute; top: 2px; left: 2px;
+                          width: 14px; height: 14px; border-radius: 50%;
+                          background: var(--muted);
+                          transition: transform .15s, background .15s; }
+  .switch input:checked + .track { background: var(--route); }
+  .switch input:checked + .track::after { transform: translateX(14px);
+                                          background: #fff; }
+  .switch input:focus-visible + .track { outline: 2px solid var(--route);
+                                         outline-offset: 2px; }
+  /* Donmus kutu: degeri okunur ama artik kullanicinin girdisi degil. */
+  .field input:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* Iki mod yan yana: birbirinin alternatifi olduklari gorunsun. */
+  .modes { display: flex; gap: 18px; }
+  .modes .check { margin-top: 10px; }
+
+  /* Katlanan blok: basligi diger bloklarin basligi gibi okunmali. */
+  details.block > summary {
+    cursor: pointer; list-style: none; user-select: none;
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--label); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .16em; text-transform: uppercase; color: var(--faint);
+  }
+  details.block > summary::-webkit-details-marker { display: none; }
+  details.block > summary::before { content: "\25B8"; font-size: 9px;
+                                    letter-spacing: 0; }
+  details.block[open] > summary::before { content: "\25BE"; }
+  details.block[open] > summary { margin-bottom: 11px; }
+  details.block > summary:hover { color: var(--muted); }
   .check input { accent-color: var(--wp); cursor: pointer; }
 
   /* ---------- tablolar ---------- */
@@ -309,35 +348,18 @@
 <main id="stageRow">
   <aside class="rail">
     <section class="block">
-      <h2>Ucak</h2>
-      <div class="fields">
-        <div class="field"><label>hiz (Gerçek Hava Hizi ) m/s</label>
-          <input id="speed" type="number" value="28" min="5" max="120" step="1"></div>
-        <div class="field"><label>yatis&deg;</label>
-          <input id="bank" type="number" value="30" min="5" max="60" step="1"></div>
-        <div class="field"><label>tirmanma&deg;</label>
-          <input id="climb" type="number" value="8" min="1" max="45" step="1"></div>
-      </div>
-      <p class="derived" id="rho">donus yaricapi <b>&ndash;</b></p>
-    </section>
-
-    <section class="block">
-      <h2>Gorev</h2>
-      <div class="fields">
-        <div class="field" title="Hem araziden dikey pay, hem yasak
-bolgelerin yaricapina eklenen yatay pay.">
-          <label>emniyet m</label>
-          <input id="clearance" type="number" value="10" min="0" max="1000" step="10"></div>
-        <div class="field" title="Ust sinir. Planlayici az yinelemeyle
-baslayip bulamazsa artiriyor; bu deger son denemenin butcesi.">
-          <label>en fazla yineleme</label>
-          <input id="iterations" type="number" value="3000" min="200"
-                 max="20000" step="500"></div>
-      </div>
-      <div class="fields" style="margin-top:8px">
-        <div class="field"><label>tohum</label>
-          <input id="seed" type="number" value="1" min="0" step="1"></div>
-        <div class="field" title="Ruzgar hizi, m/s"><label>ruzgar m/s</label>
+      <h2>Ucus kosullari</h2>
+      <!-- Anahtar, dugme degil: bu bir DURUM. Acikken waypointler
+           degistikce ruzgar yeniden cekiliyor ve kutular donuyor. -->
+      <label class="switch" title="Waypointlerin orta noktasi icin saatlik
+ruzgar tahminini kullanir: hiz, yon ve irtifa profili. Waypointleri
+degistirdikce yeniden ceker. Acikken ruzgar kutulari donar. Internet
+gerekiyor; alinamazsa kapatip elle girebilirsin.">
+        <input id="liveWind" type="checkbox"><span class="track"></span>
+        anlik ruzgar verisi</label>
+      <div class="fields pair">
+        <div class="field" title="Ruzgar hizi, m/s">
+          <label id="windSpeedLabel">ruzgar m/s</label>
           <input id="windSpeed" type="number" value="0" min="0" max="40"
                  step="1"></div>
         <div class="field" title="Ruzgarin GELDIGI yon: 270 = batidan">
@@ -345,19 +367,65 @@ baslayip bulamazsa artiriyor; bu deger son denemenin butcesi.">
           <input id="windFrom" type="number" value="270" min="0" max="360"
                  step="10"></div>
       </div>
+      <!-- Secilen sey AMAC, mekanizma degil. Ruzgar iki modda da sureye
+           giriyor; fark rotayi sekillendirip sekillendirmedigi. -->
+      <div class="modes">
+        <label class="check" title="Mesafeyi en kucuk yapar. Ruzgar rotayi
+DEGISTIRMEZ, yalnizca surenin hesabina girer.">
+          <input type="radio" name="objective" value="length" checked>
+          en kisa yol</label>
+        <label class="check" title="Sureyi en kucuk yapar. Ruzgarin
+irtifayla guclendigini hesaba katar: arka ruzgarda tirmanir, karsi
+ruzgarda araziye yaklasir. Girilen hiz o zaman YERDEN 10 metredeki
+ruzgardir - hava durumu da ruzgari orada bildirir.">
+          <input type="radio" name="objective" value="time">
+          en kisa sure</label>
+      </div>
       <p class="derived" id="windNote">ruzgar yok, sure sakin hava</p>
+      <p class="derived" id="planKind">plan modu <b>&ndash;</b></p>
+    </section>
+
+    <!-- Ucak ozellikleri her ucusta degismiyor: bir kere ayarlanip
+         tarayicida saklaniyor ve kapali duruyor. Gorev ekraninda yalnizca
+         goreve ait olan kalsin. -->
+    <details class="block" id="setup">
+      <summary>Ucak ve emniyet</summary>
+      <div class="fields">
+        <div class="field" title="GERCEK hava hizi (TAS). Otopilota
+yazilacak gosterge hizi bundan farkli; rotayi planlayinca alt seritte
+AIRSPEED_CRUISE olarak yaziyor.">
+          <label>hiz m/s</label>
+          <input id="speed" type="number" value="28" min="5" max="120"
+                 step="1"></div>
+        <div class="field"><label>yatis&deg;</label>
+          <input id="bank" type="number" value="30" min="5" max="60"
+                 step="1"></div>
+        <div class="field"><label>tirmanma&deg;</label>
+          <input id="climb" type="number" value="8" min="1" max="45"
+                 step="1"></div>
+      </div>
+      <div class="fields pair" style="margin-top:8px">
+        <div class="field" title="Hem araziden dikey pay, hem yasak
+bolgelerin yaricapina eklenen yatay pay.">
+          <label>emniyet m</label>
+          <input id="clearance" type="number" value="10" min="0" max="1000"
+                 step="10"></div>
+      </div>
+      <p class="derived" id="rho">donus yaricapi <b>&ndash;</b></p>
       <label class="check" title="Yatay rota, tek seyir kotu. 3B takildiginda
 ya da karsilastirma icin.">
         <input id="flat" type="checkbox"> araziyi yok say (2B)</label>
-      <p class="derived" id="planKind">plan modu <b>&ndash;</b></p>
-    </section>
+    </details>
 
     <section class="block">
       <h2>Waypointler <span class="count" id="wpCount">0</span>
         <button id="addWp">Ekle</button></h2>
       <table>
         <thead><tr><th>#</th><th>enlem</th><th>boylam</th>
-          <th id="altHead">kot m</th><th>yon&deg;</th><th></th></tr></thead>
+          <th id="altHead">kot m</th><th>yon&deg;</th>
+          <th title="Bu noktada kac saniye beklensin. Bos = beklemez.
+Gorev dosyasinda NAV_LOITER_TIME oluyor.">bekle s</th>
+          <th></th></tr></thead>
         <tbody id="wplist"></tbody>
       </table>
       <p class="hint" id="empty">Ekle'ye bas, sonra haritaya tikla.</p>

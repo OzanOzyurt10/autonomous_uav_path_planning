@@ -10,7 +10,8 @@ import math
 
 import pytest
 
-from src.wind import flight_time, ground_speed, ground_speeds, wind_vector
+from src.wind import (ProfileWind, ShearWind, UniformWind, flight_time,
+                      ground_speed, ground_speeds, wind_vector)
 
 EAST = 0.0
 NORTH = math.pi / 2
@@ -231,3 +232,192 @@ class TestGroundSpeeds:
         speeds = ground_speeds(poses, 28.0, (8.0, 0.0))
         assert max(speeds) == pytest.approx(36.0)
         assert min(speeds) == pytest.approx(20.0)
+
+
+class TestUniformWind:
+    """Alan arayuzunun tekduze hali: her yerde ayni vektor.
+
+    Bu sinif davranis eklemiyor, mevcut davranisi alan sozlesmesine
+    sokuyor - eski cagrilar bozulmadan ShearWind ile yer degistirebilsin.
+    """
+
+    def test_same_vector_everywhere(self):
+        field = UniformWind(10.0, 270.0)
+        assert field.at(0.0, 0.0, 0.0) == field.at(9000.0, 4000.0, 3000.0)
+
+    def test_matches_wind_vector(self):
+        field = UniformWind(10.0, 270.0)
+        assert field.at(0.0, 0.0, 500.0) == pytest.approx(
+            wind_vector(10.0, 270.0))
+
+    def test_strongest_is_the_speed(self):
+        assert UniformWind(7.5, 0.0).strongest() == pytest.approx(7.5)
+
+    def test_negative_speed_rejected(self):
+        with pytest.raises(ValueError):
+            UniformWind(-1.0, 0.0)
+
+
+class TestShearWind:
+    """Guc yasasi: u(h) = u_ref * (h / h_ref) ** alpha, h YERDEN yukseklik.
+
+    Iki sinir kritik. Tavansiz profil sinirsiz buyur ve planlayici arka
+    ruzgarda her seferinde tavana tirmanir; taban olmadan da yerde ruzgar
+    sifira duser ve karsi ruzgarda araziye yapismak bedava gorunur.
+    """
+
+    REF = 10.0
+    TOP = 500.0
+
+    def field(self, ground=None, speed=10.0, alpha=0.14):
+        return ShearWind(speed, 270.0, ground=ground, ref_height=self.REF,
+                         alpha=alpha, top=self.TOP)
+
+    def test_reference_height_gives_reference_speed(self):
+        speed = math.hypot(*self.field().at(0.0, 0.0, self.REF))
+        assert speed == pytest.approx(10.0)
+
+    def test_speed_grows_with_altitude(self):
+        field = self.field()
+        low = math.hypot(*field.at(0.0, 0.0, 50.0))
+        high = math.hypot(*field.at(0.0, 0.0, 300.0))
+        assert high > low
+
+    def test_power_law_value(self):
+        # 100 m'de: 10 * (100/10) ** 0.14
+        speed = math.hypot(*self.field().at(0.0, 0.0, 100.0))
+        assert speed == pytest.approx(10.0 * 10.0 ** 0.14)
+
+    def test_capped_above_top(self):
+        field = self.field()
+        at_top = math.hypot(*field.at(0.0, 0.0, self.TOP))
+        far_above = math.hypot(*field.at(0.0, 0.0, 5000.0))
+        assert far_above == pytest.approx(at_top)
+
+    def test_floor_below_reference_height(self):
+        # Yerde sifira dusmemeli: duserse karsi ruzgarda araziye yapismak
+        # sonsuz kazancli gorunur ve planlayici tabana yapisir.
+        field = self.field()
+        assert math.hypot(*field.at(0.0, 0.0, 0.0)) == pytest.approx(10.0)
+
+    def test_direction_does_not_veer(self):
+        field = self.field()
+        low = field.at(0.0, 0.0, 20.0)
+        high = field.at(0.0, 0.0, 400.0)
+        assert math.atan2(*reversed(low)) == pytest.approx(
+            math.atan2(*reversed(high)))
+
+    def test_direction_matches_meteorology(self):
+        # Batidan esen ruzgar doguya gider: +x bileseni pozitif olmali.
+        assert self.field().at(0.0, 0.0, 100.0)[0] > 0.0
+
+    def test_height_is_above_ground_not_sea_level(self):
+        # Ayni MSL irtifasi, iki farkli zemin: daginin ustunde AGL kucuk,
+        # dolayisiyla ruzgar zayif. MSL kullanilsaydi ikisi esit cikardi.
+        valley = self.field(ground=lambda x, y: 0.0)
+        ridge = self.field(ground=lambda x, y: 900.0)
+        assert (math.hypot(*ridge.at(0.0, 0.0, 1000.0))
+                < math.hypot(*valley.at(0.0, 0.0, 1000.0)))
+
+    def test_ground_above_aircraft_does_not_crash(self):
+        # Arazi verisi ile poz cakisabilir; negatif AGL taban degerine
+        # kirpilmali, negatif sayinin kesirli kuvveti karmasik sayi verir.
+        field = self.field(ground=lambda x, y: 2000.0)
+        assert math.hypot(*field.at(0.0, 0.0, 500.0)) == pytest.approx(10.0)
+
+    def test_strongest_is_the_capped_speed(self):
+        field = self.field()
+        assert field.strongest() == pytest.approx(
+            math.hypot(*field.at(0.0, 0.0, self.TOP)))
+
+    def test_zero_alpha_is_uniform(self):
+        field = self.field(alpha=0.0)
+        assert (math.hypot(*field.at(0.0, 0.0, 20.0))
+                == pytest.approx(math.hypot(*field.at(0.0, 0.0, 480.0))))
+
+    def test_negative_speed_rejected(self):
+        with pytest.raises(ValueError):
+            self.field(speed=-1.0)
+
+    def test_negative_alpha_rejected(self):
+        with pytest.raises(ValueError):
+            self.field(alpha=-0.1)
+
+    def test_non_positive_reference_height_rejected(self):
+        with pytest.raises(ValueError):
+            ShearWind(10.0, 270.0, ref_height=0.0)
+
+    def test_top_below_reference_height_rejected(self):
+        with pytest.raises(ValueError):
+            ShearWind(10.0, 270.0, ref_height=100.0, top=50.0)
+
+
+class TestProfileWind:
+    """Olculmus seviyeler arasinda interpolasyon.
+
+    Gercek profil guc yasasina benzemiyor: hiz irtifayla tek yonlu artmiyor
+    (Riva'da 805 m'de tepe yapip dusuyor) ve yon doniyor (1.5 km'de 33
+    derece). Bu sinif formul uydurmuyor, olculen seviyeleri veri kabul
+    ediyor. Seviyeler MSL - basinc seviyesi verisi oyle geliyor.
+    """
+
+    LEVELS = [(100.0, 4.0, 270.0), (500.0, 8.0, 270.0),
+              (1000.0, 6.0, 270.0)]
+
+    def test_returns_the_level_value_at_that_height(self):
+        field = ProfileWind(self.LEVELS)
+        assert math.hypot(*field.at(0.0, 0.0, 500.0)) == pytest.approx(8.0)
+
+    def test_interpolates_between_levels(self):
+        field = ProfileWind(self.LEVELS)
+        middle = math.hypot(*field.at(0.0, 0.0, 300.0))
+        assert middle == pytest.approx(6.0)
+
+    def test_speed_may_fall_with_altitude(self):
+        # Guc yasasinin yapamadigi sey: 500 m'de tepe, ustunde dusus.
+        field = ProfileWind(self.LEVELS)
+        assert (math.hypot(*field.at(0.0, 0.0, 1000.0))
+                < math.hypot(*field.at(0.0, 0.0, 500.0)))
+
+    def test_clamped_below_lowest_level(self):
+        field = ProfileWind(self.LEVELS)
+        assert field.at(0.0, 0.0, 0.0) == field.at(0.0, 0.0, 100.0)
+
+    def test_clamped_above_highest_level(self):
+        field = ProfileWind(self.LEVELS)
+        assert field.at(0.0, 0.0, 9000.0) == field.at(0.0, 0.0, 1000.0)
+
+    def test_direction_interpolates_across_the_seam(self):
+        # 350 ile 10 derecenin ortasi 0'dir, 180 degil. Hiz ve yonu ayri
+        # ayri interpole etmek tam burada ters yone bakan bir ruzgar verir;
+        # o yuzden VEKTOR interpole ediliyor.
+        field = ProfileWind([(100.0, 10.0, 350.0), (200.0, 10.0, 10.0)])
+        wx, wy = field.at(0.0, 0.0, 150.0)
+        assert abs(wx) < 0.01
+        assert wy < 0.0                  # kuzeyden esiyor: guneye gidiyor
+
+    def test_single_level_is_uniform(self):
+        field = ProfileWind([(300.0, 7.0, 90.0)])
+        assert field.at(0.0, 0.0, 0.0) == field.at(0.0, 0.0, 5000.0)
+
+    def test_unsorted_levels_are_ordered(self):
+        field = ProfileWind(list(reversed(self.LEVELS)))
+        assert math.hypot(*field.at(0.0, 0.0, 300.0)) == pytest.approx(6.0)
+
+    def test_repeated_height_does_not_divide_by_zero(self):
+        field = ProfileWind([(100.0, 4.0, 270.0), (100.0, 9.0, 270.0),
+                             (200.0, 6.0, 270.0)])
+        assert math.hypot(*field.at(0.0, 0.0, 150.0)) > 0.0
+
+    def test_strongest_covers_the_whole_profile(self):
+        # Alt sinir buna dayaniyor. Iki vektorun dogrusal karisiminin
+        # buyuklugu ikisinin buyugunu asamaz, o yuzden seviyelerin
+        # maksimumu butun profil icin gecerli bir ust sinir.
+        field = ProfileWind(self.LEVELS)
+        assert field.strongest() == pytest.approx(8.0)
+        for height in range(0, 1200, 37):
+            assert math.hypot(*field.at(0.0, 0.0, float(height))) <= 8.0 + 1e-9
+
+    def test_empty_profile_rejected(self):
+        with pytest.raises(ValueError):
+            ProfileWind([])

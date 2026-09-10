@@ -16,6 +16,10 @@ VERSION_LINE = "QGC WPL 110"
 FRAME_GLOBAL = 0               # MAV_FRAME_GLOBAL: irtifa MSL
 NAV_WAYPOINT = 16              # MAV_CMD_NAV_WAYPOINT
 NAV_TAKEOFF = 22               # MAV_CMD_NAV_TAKEOFF
+# Ucak noktaya varinca param1 saniye bekliyor, sonra rotaya devam ediyor.
+# Yaricap sifir birakiliyor: otopilot kendi WP_LOITER_RAD'ini kullaniyor
+# ve o deger ucaga gore dogru olan.
+NAV_LOITER_TIME = 19           # MAV_CMD_NAV_LOITER_TIME
 TAKEOFF_PITCH = 15.0           # derece; ArduPlane'in kalkis tirmanma acisi
 
 
@@ -64,15 +68,26 @@ def _line(index, current, frame, command, lat, lon, alt, param1=0.0):
     ])
 
 
-def mission_text(waypoints, home=None, takeoff: bool = True) -> str:
+def mission_text(waypoints, home=None, takeoff: bool = True,
+                 loiter=None) -> str:
     """(lat, lon, MSL kot) dizisini QGC WPL 110 metnine cevirir.
 
     Satir 0 her zaman home ve CURRENT=1 olmak zorunda; otopilot dosyayi
     boyle bekliyor. home verilmezse ilk waypoint kullaniliyor, ama dogru
     olan zemin kotunu gecirmek - home ucus kotu degil, kalkis noktasi.
+
+    loiter waypointlerle ayni uzunlukta saniye listesi; sifirdan buyuk
+    olanlar NAV_WAYPOINT yerine NAV_LOITER_TIME oluyor.
     """
     if not waypoints:
         raise ValueError("en az bir waypoint gerekli")
+    if loiter is None:
+        loiter = [0.0] * len(waypoints)
+    if len(loiter) != len(waypoints):
+        raise ValueError(f"bekleme sayisi waypoint sayisiyla uyusmuyor: "
+                         f"{len(loiter)} != {len(waypoints)}")
+    if any(seconds < 0.0 for seconds in loiter):
+        raise ValueError("bekleme suresi negatif olamaz")
 
     first = waypoints[0]
     if home is None:
@@ -89,9 +104,10 @@ def mission_text(waypoints, home=None, takeoff: bool = True) -> str:
                            first[2], param1=TAKEOFF_PITCH))
         index += 1
 
-    for lat, lon, alt in waypoints:
-        lines.append(_line(index, 0, FRAME_GLOBAL, NAV_WAYPOINT,
-                           lat, lon, alt))
+    for (lat, lon, alt), seconds in zip(waypoints, loiter):
+        command = NAV_LOITER_TIME if seconds > 0.0 else NAV_WAYPOINT
+        lines.append(_line(index, 0, FRAME_GLOBAL, command, lat, lon, alt,
+                           param1=seconds))
         index += 1
     return "\n".join(lines) + "\n"
 

@@ -203,6 +203,31 @@ tırmanışta hız kaybediyor. Kalkış sonrası ilk bacak %8-22 sapıyor,
 karşı rüzgârlı uzun bacak %1-2.
 
 
+--- BEKLEME (LOITER) ÖLÇÜMÜ ---
+
+Waypoint başına bekleme NAV_LOITER_TIME (komut 19) olarak yazılıyor,
+süre param1'de. Yarıçap sıfır bırakılıyor; otopilot kendi WP_LOITER_RAD
+değerini kullanıyor.
+
+Aynı 15 km'lik rota, biri beklemeli:
+
+  beklemesiz    tahmin 536.1 s   ölçülen 543.5 s   +1.4 %
+  120 s bekleme tahmin 656.1 s   ölçülen 685.5 s   +4.5 %
+
+Ölçülen fark 142.0 s, komut edilen 120 s. Aradaki 22 s uçağın bekleme
+dairesine girip çıkması: WP_LOITER_RAD 80 m, yer hızı 27.9 m/s, bir tam
+tur 2*pi*80/27.9 = 18.0 s. Geri kalan ~4 s yakalama geometrisi.
+
+Yani tahmin KOMUT EDİLEN süreyi kapsıyor, otopilotun tur payını değil.
+Bekleme noktası başına ~1 tur eklemek gerekiyor. Modellemedik: bekleme
+yarıçapı otopilot ayarı, planlayıcı onu bilmiyor ve dönüş yarıçapından
+(rho = 138 m) türetmek yanlış olurdu.
+
+DİKKAT: MISSION_ITEM_REACHED bekleme BİTİNCE geliyor, varışta değil.
+Log'da bekleme noktasına varış, bir önceki noktadan bekleme kadar geç
+görünüyor - kaçırılmış bir waypoint sanılmasın.
+
+
 --- EN KRİTİK AYAR: HAVA HIZI ---
 
 Model GERÇEK hava hızı (TAS) ister; AIRSPEED_CRUISE ise GÖSTERGE hızı
@@ -280,3 +305,35 @@ yeniden başlayınca değişir. Öğrenmek için WSL'de:
 Mission Planner tarafı: sağ üstte UDP seç (UDPCl değil), CONNECT, port
 sorarsa 14550. Veri gelmezse güvenlik duvarıdır - Mission Planner'ı
 yönetici olarak aç.
+
+================================================================
+PAKETLEME (dagitilabilir .exe)
+================================================================
+
+Python kurulu olmayan makinede calisan tek dosya uretir.
+
+  venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile ^
+      --name "GorevPlanlayici" --add-data "app/static;app/static" ^
+      --console launch.py
+
+Sonra arazi klasorunu yanina koy:
+
+  mkdir dist\data
+  copy data\N46E014.hgl dist\data\
+  xcopy /E /I data\cache dist\data\cache
+
+Dagitilan sey dist\ klasorunun tamami (~45 MB): exe + data + OKU.txt.
+
+NEDEN data DISARIDA: onbellek YAZILABILIR olmali. Yeni bolge planlaninca
+arazi oraya indiriliyor; exe'nin icine gomulseydi salt okunur olurdu ve
+her acilista yeniden indirilirdi.
+
+launch.py exe'nin giris noktasi: sunucuyu baslatip tarayiciyi aciyor.
+app/server.py'nin kendi main'i sade kaldi, gelistirirken hala
+"python -m app.server" ile kosuluyor.
+
+Yol cozumleme: app/server.py icindeki _base_dir() paketlenmis surumde
+exe'nin klasorunu, kaynak kodda proje kokunu veriyor. Ikisi ayrilmazsa
+paketlenmis surum araziyi bulamiyor ve sessizce 2B'ye dusuyor.
+
+build/, dist/ ve *.spec gitignore'da: her derlemede yeniden uretiliyorlar.

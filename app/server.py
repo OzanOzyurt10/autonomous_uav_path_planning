@@ -16,18 +16,23 @@ import math
 import mimetypes
 import os
 import posixpath
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from app.mission import (Constraints, Zone, agl_profile, auto_altitude,
                          build_env, build_env_2d, compass_to_yaw, geo_window,
                          indicated_airspeed, plan_mission, plan_mission_2d,
                          sample_leg, sample_mission, waypoint_altitudes,
-                         waypoint_headings, yaw_to_compass)
+                         waypoint_headings, wind_cost, yaw_to_compass)
+from src.forecast import ForecastUnavailable, wind_profile
 from src.geo import Frame
+from src.rrt_star import LENGTH
 from src.terrain import MissingTiles, TileStore, tile_name
 from src.terrarium import ElevationUnavailable, TerrariumSource
-from src.wind import flight_time, ground_speeds, wind_vector 
+from src.wind import (REF_HEIGHT, ProfileWind, ShearWind, as_field,
+                      flight_time, ground_speeds, wind_vector)
 from src.wpl import deviation, mission_text, simplify
 
 # .geojson standart tabloda yok; olmazsa octet-stream gider ve calisir,
@@ -37,9 +42,25 @@ mimetypes.add_type("application/geo+json", ".geojson")
 HOST, PORT = "127.0.0.1", 8000
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+
+def _base_dir() -> str:
+    """Veri klasorunun kok dizini.
+
+    Paketlenmis .exe'de calisma dizini kullanicinin bulundugu yer oluyor
+    ve orada data/ yok; arazi ve onbellek exe'nin YANINDA duruyor. Kaynak
+    kodda ise proje koku. Ikisini ayirmazsak paketlenmis surum araziyi
+    bulamiyor ve sessizce arazisiz plana dusuyor.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+DATA_DIR = os.path.join(_base_dir(), "data")
+
 # Karo kutuphanesi: gevsek dosyalar ve zip arsivleri. Yeni karo indirdikce
 # buraya koyman yeter, kapsama kendiliginden buyur.
-TILE_SOURCES = ["data", "ALPS.hglzip"]
+TILE_SOURCES = [DATA_DIR, os.path.join(_base_dir(), "ALPS.hglzip")]
 
 # Acilista gosterilen pencere.
 START_LAT, START_LON = 46.15, 14.35
@@ -62,6 +83,18 @@ MAX_WAYPOINTS = 12             # her bacak ayri bir RRT* kosusu
 # yeri olsun. Donus yaricapiyla da buyuyor, dar pencerede Dubins sikisiyor.
 WINDOW_MARGIN = 2000.0
 MAX_ZONES = 24
+# Waypoint basina bekleme. Ust sinir keyfi degil: otopilot beklerken
+# gorev ilerlemiyor ve tek bir yanlis girilen sayi ucusu saatlerce
+# kilitleyebilir.
+MAX_LOITER = 3600.0
+# Rota hedefi: mesafe mi sure mi kucultuluyor. Sure hedefi ruzgari
+# maliyete katiyor, mesafe hedefi bugune kadarki davranis.
+OBJECTIVES = ("length", "time")
+# Sure hedefinde ruzgarin nereden geldigi: cekilmis tahmin profili ya da
+# guc yasasi.
+PROFILE_FETCHED = "profil"
+PROFILE_FORMULA = "formul"
+# Ikisi ayni sinifi degil, ayni SOZLESMEYI kullaniyor: at() ve strongest().
 # Gorev dosyasi seyreltmesi: birakilan cizgi rotadan en fazla bu kadar
 # sapiyor. Olculdu - 26 km'lik bir rotada 5 m tolerans 1894 pozu 16
 # noktaya indiriyor, olculen sapma 4.2 m. Dubins rotasi cogunlukla duz
@@ -82,7 +115,7 @@ STORE = TileStore(TILE_SOURCES)
 # Yerel karo yoksa yukseklik verisi internetten cekiliyor ve data/cache
 # altina yaziliyor; ayni bolge ikinci kez planlanirsa ag gerekmiyor.
 # 3B'nin dunyanin her yerinde calisabilmesinin sarti bu.
-TERRARIUM = TerrariumSource()
+TERRARIUM = TerrariumSource(cache_dir=os.path.join(DATA_DIR, "cache"))
 # Indirilen arazinin post araligi artik sabit degil, pencereyle olcekli.
 # Sabit 90 m'de 120 km'lik pencere 90 karo isterdi ve TerrariumSource 64
 # karo sinirinda reddederdi. Kenar basina hedef post sayisini sabit
@@ -236,7 +269,8 @@ def _constraints_from(body):
     )
 
 
-def _run_2d(points, frame, peak, bounds, zones, constraints, headings):
+def _run_2d(points, frame, peak, bounds, zones, constraints, headings,
+            field=None):
     """Yatay rota, tek seyir kotu; arazi HESABA KATILMIYOR.
 
     Kot girilmiyor: arazi varsa pencerenin en yuksek noktasinin uzerinde,
@@ -252,15 +286,21 @@ def _run_2d(points, frame, peak, bounds, zones, constraints, headings):
         if not env.is_free(point):
             raise ValueError(f"{index + 1}. waypoint yasak bolgenin icinde "
                              f"ya da harita disinda")
+    # 2B'de butun rota tek kotta: alan orada tekduze ve Zermelo geregi
+    # rotanin GEOMETRISI degismiyor. Yine de veriliyor, cunku yan ruzgarin
+    # hava hizini astigi yonleri ancak bu model eliyor.
+    model = (LENGTH if field is None
+             else wind_cost(constraints.speed, field, env.suggested_step(),
+                            flat=True, altitude=cruise))
     mission = plan_mission_2d(waypoints, env, constraints, cruise,
-                              headings)
+                              headings, model)
     # Yuk hep (x, y, z) olsun: 3B gorunum waypointleri seyir kotunda
     # cizebilsin diye.
     return mission, [(x, y, cruise) for x, y in waypoints]
 
 
 def _run_3d(flat, altitudes, pinned, terrain, bounds, zones, constraints,
-            headings):
+            headings, field=None):
     """Araziden ve yasak bolgelerden kacinan uc boyutlu rota.
 
     Kotlar disarida hesaplandi: harita tavani onlara bagli ve tavan
@@ -278,7 +318,9 @@ def _run_3d(flat, altitudes, pinned, terrain, bounds, zones, constraints,
         raise ValueError(f"{index + 1}. waypoint yasak bolgenin icinde ya "
                          f"da harita disinda (kot {how}: {point[2]:.0f} m). "
                          f"Waypointi kaydir ya da bolgeyi kucult.")
-    return (plan_mission(waypoints, env, constraints, headings),
+    model = (LENGTH if field is None
+             else wind_cost(constraints.speed, field, env.suggested_step()))
+    return (plan_mission(waypoints, env, constraints, headings, model),
             waypoints)
 
 
@@ -311,6 +353,16 @@ def plan_payload(body):
     # karistirmak 90 derece sessiz hata olurdu.
     headings = [compass_to_yaw(float(p[3]))
                 if len(p) > 3 and p[3] is not None else None for p in raw]
+    # Besinci eleman istege bagli bekleme, saniye. Rotanin GEOMETRISINI
+    # degistirmiyor - ucak ayni noktada donuyor - ama sureyi uzatiyor ve
+    # gorev dosyasinda o waypoint NAV_LOITER_TIME oluyor.
+    loiter = [float(p[4]) if len(p) > 4 and p[4] is not None else 0.0
+              for p in raw]
+    for index, seconds in enumerate(loiter):
+        if not 0.0 <= seconds <= MAX_LOITER:
+            raise ValueError(
+                f"{index + 1}. waypoint icin bekleme 0 ile "
+                f"{MAX_LOITER:.0f} saniye arasinda olmali: {seconds:.0f}")
     constraints = _constraints_from(body)
 
     margin = max(WINDOW_MARGIN, 4 * constraints.rho)
@@ -351,10 +403,38 @@ def plan_payload(body):
 
     zones = _zones_from(body, frame, bounds)
 
+    # Ruzgar alani. Kapaliyken bugunku davranis: tek vektor, yalnizca sure
+    # okumasi. Acikken irtifayla degisen profil hem maliyete hem sureye
+    # giriyor - ikisi ayni alandan gelmezse arayuz rotayla celisen bir sure
+    # gosterirdi. Sifir ruzgarda profil bir sey degistirmiyor, bosuna
+    # maliyet hesabi yapilmasin.
+    wind_speed = float(body.get("wind_speed", 0.0))
+    wind_from = float(body.get("wind_from", 0.0))
+    objective = body.get("objective", "length")
+    if objective not in OBJECTIVES:
+        raise ValueError("rota hedefi 'length' ya da 'time' olmali: "
+                         + str(objective))
+    field, source = None, None
+    if objective == "time":
+        # Cekilmis profil uydurma guc yasasini yener: gercek atmosferde
+        # hiz irtifayla tek yonlu artmiyor ve yon doniyor, formul ikisini
+        # de kaciriyor. Seviyeler MSL geliyor, arazi gerekmiyor.
+        levels = body.get("wind_profile")
+        if levels:
+            field = ProfileWind([(float(height), float(speed), float(deg))
+                                 for height, speed, deg in levels])
+            source = PROFILE_FETCHED
+        elif wind_speed > 0.0:
+            field = ShearWind(wind_speed, wind_from,
+                              ground=(terrain.elevation_at
+                                      if terrain is not None else None))
+            source = PROFILE_FORMULA
+
     fell_back = False
     if mode == "3d":
         mission, waypoints = _run_3d(flat, altitudes, pinned, terrain,
-                                     bounds, zones, constraints, headings)
+                                     bounds, zones, constraints, headings,
+                                     field)
         # Tirmanma sinirinin kaldiramadigi bir sirt butun gorevi
         # cope atmasin: araziyi yok sayan rota hala bir sonuc, yeter ki
         # oyle oldugu soylensin. Arayuz bunu yuksek sesle yaziyor.
@@ -363,7 +443,7 @@ def plan_payload(body):
 
     if mode == "2d":
         mission, waypoints = _run_2d(points, frame, peak, bounds, zones,
-                                     constraints, headings)
+                                     constraints, headings, field)
 
     step = constraints.speed * FRAME_SECONDS
 
@@ -382,16 +462,33 @@ def plan_payload(body):
     agls = agl_profile(poses, terrain)
     # constraints.speed HAVA hizi: rho hesabi da ondan turuyor. Yer hizi
     # ruzgardan cikiyor ve rota boyunca degisiyor.
-    wind = _wind_payload(poses, constraints.speed,
-                         float(body.get("wind_speed", 0.0)),
-                         float(body.get("wind_from", 0.0)))
+    wind = _wind_payload(poses, constraints.speed, wind_speed, wind_from,
+                         field)
+    # Istenen hedef geri gidiyor: sure modu secilip ruzgar sifirsa alan
+    # kurulmuyor ve arayuz "neden ayni cikti" sorusunu cevaplayabilmeli.
+    wind["objective"] = objective
+    # Hangi ruzgar modeli kullanildi: cekilen profil mi, guc yasasi mi.
+    # Arayuz "cektigim veri gercekten kullanildi mi" sorusunu ancak boyle
+    # cevaplayabiliyor.
+    wind["source"] = source
     # Gorev dosyasi yukun icinde gidiyor: ayri uc nokta acmak sunucuda
     # plan saklamayi gerektirirdi. Seyreltilmis dosya birkac KB.
+    # Bekleme noktalari POZ dizisinde nerede? Gorev dosyasi seyreltilmis
+    # rotadan yaziliyor ve seyreltme o pozu atabilir; atarsa bekleme
+    # sessizce kaybolur.
+    holds = _loiter_marks(poses, waypoints, loiter)
     mission_file = (_mission_payload(poses, frame, terrain,
-                                     constraints.speed)
+                                     constraints.speed, holds)
                     if mission.found else None)
     failed = [index + 1 for index, leg in enumerate(mission.legs)
               if not leg.found]
+
+    # Bekleme ucus suresine giriyor: kullanicinin sordugu sey "bu gorev
+    # ne kadar surer", havada gecen sure degil.
+    waiting = sum(loiter)
+    duration = mission.duration + waiting if mission.found else None
+    if wind["duration"] is not None:
+        wind["duration"] += waiting
 
     return {
         "ok": mission.found,
@@ -404,7 +501,9 @@ def plan_payload(body):
         "cost": mission.cost if mission.found else None,
         # Iki sure birden: biri sakin hava (uzunluk / hava hizi), digeri
         # ruzgar altinda. Arayuz hangisini gosterdigini yazmak zorunda.
-        "duration": mission.duration if mission.found else None,
+        "duration": duration,
+        # Ayri veriliyor: arayuz "bunun 120 saniyesi bekleme" diyebilsin.
+        "loiter_total": waiting,
         "wind": wind,
         "mission_file": mission_file,
         "frame_seconds": FRAME_SECONDS,
@@ -446,20 +545,24 @@ def plan_payload(body):
     }
 
 
-def _wind_payload(poses, airspeed, speed, from_deg):
-    """Ruzgar altinda sure ve yer hizi araligi.
+def _wind_payload(poses, airspeed, speed, from_deg, field=None):
+    """Ruzgar altinda sure, yer hizi araligi ve rotanin gordugu ruzgar.
 
-    Ruzgar rotanin GEOMETRISINI degistirmiyor; burada yalnizca o rotanin
-    ne kadar surecegi yeniden hesaplaniyor. Yan ruzgar hava hizini asarsa
-    rota gecerli kalir ama UCULAMAZ - plani cope atmak yerine sebebi
-    soyleyip rotayi geri veriyoruz.
+    field verilmisse rotayi PLANLAYAN alan odur; sure ayni alandan
+    okunmali, yoksa gosterilen sayi rotayla celisir. Yan ruzgar hava
+    hizini asarsa rota gecerli kalir ama UCULAMAZ - plani cope atmak
+    yerine sebebi soyleyip rotayi geri veriyoruz.
     """
     payload = {"speed": speed, "from_deg": from_deg, "duration": None,
-               "min_speed": None, "max_speed": None, "message": ""}
+               "min_speed": None, "max_speed": None, "message": "",
+               # Profil acikken girilen deger 10 m'deki ruzgar; ucusun
+               # gordugu ondan farkli ve arayuz ikisini de yazmali.
+               "planned": field is not None, "mean_speed": None,
+               "ref_height": REF_HEIGHT if field is not None else None}
     if not poses:
         return payload
 
-    wind = wind_vector(speed, from_deg)
+    wind = wind_vector(speed, from_deg) if field is None else field
     try:
         payload["duration"] = flight_time(poses, airspeed, wind)
         speeds = ground_speeds(poses, airspeed, wind)
@@ -470,10 +573,49 @@ def _wind_payload(poses, airspeed, speed, from_deg):
     if speeds:
         payload["min_speed"] = min(speeds)
         payload["max_speed"] = max(speeds)
+    sampled = as_field(wind)
+    payload["mean_speed"] = sum(
+        math.hypot(*sampled.at(pose[0], pose[1], pose[2]))
+        for pose in poses) / len(poses)
     return payload
 
 
-def _mission_payload(poses, frame, terrain, airspeed):
+def forecast_payload(lat: float, lon: float) -> dict:
+    """Verilen noktada seviyeli ruzgar tahmini.
+
+    Ag hatasi plani cope atmiyor: ok=False donup sebebi soyluyoruz ve
+    kullanici ruzgari elle girmeye devam ediyor. Uygulamanin internetsiz
+    calisabilmesi korunmak zorunda.
+    """
+    try:
+        got = wind_profile(lat, lon)
+    except ForecastUnavailable as error:
+        return {"ok": False, "message": str(error)}
+    got["ok"] = True
+    return got
+
+
+def _loiter_marks(poses, waypoints, loiter):
+    """Bekleme suresi olan waypointleri poz indisine baglar.
+
+    Waypointler rotanin uzerinde oldugu icin en yakin poz onlarin ta
+    kendisi; mesafe sifira yakin cikiyor. Indis lazim cunku gorev dosyasi
+    seyreltilmis rotadan yaziliyor ve o pozun korunmasi gerekiyor.
+    """
+    marks = {}
+    if not poses:
+        return marks
+    for point, seconds in zip(waypoints, loiter):
+        if seconds <= 0.0:
+            continue
+        best = min(range(len(poses)),
+                   key=lambda i: math.dist(poses[i][:3], point[:3]))
+        # Ayni poza iki waypoint dusemez ama duserse uzun olan kazansin.
+        marks[best] = max(marks.get(best, 0.0), seconds)
+    return marks
+
+
+def _mission_payload(poses, frame, terrain, airspeed, holds=None):
     """Yogun rotayi otopilotun yukleyebilecegi gorev dosyasina cevirir.
 
     Home kotu ZEMIN olmali, ucus kotu degil: home kalkis noktasi. Arazi
@@ -483,9 +625,14 @@ def _mission_payload(poses, frame, terrain, airspeed):
     if not poses:
         return {"text": "", "points": 0, "deviation": None,
                 "tolerance": WPL_TOLERANCE, "airspeed_cruise": None,
-                "mean_altitude": None, "home_alt": None}
+                "mean_altitude": None, "home_alt": None,
+                "loiter_points": 0}
 
     kept = simplify(poses, WPL_TOLERANCE)
+    # Bekleme noktalari seyreltmeden muaf: atilirlarsa bekleme komutu da
+    # gider ve gorev sessizce beklemesiz ucar.
+    if holds:
+        kept = sorted(set(kept) | set(holds))
     waypoints = []
     for index in kept:
         x, y, z = poses[index][0], poses[index][1], poses[index][2]
@@ -501,10 +648,12 @@ def _mission_payload(poses, frame, terrain, airspeed):
     # ortalama zaten mesafeye gore agirlikli.
     altitudes = [pose[2] for pose in poses]
     mean_altitude = sum(altitudes) / len(altitudes)
-    return {"text": mission_text(waypoints, home=home),
+    seconds = [holds.get(index, 0.0) for index in kept] if holds else None
+    return {"text": mission_text(waypoints, home=home, loiter=seconds),
             "points": len(waypoints),
             "deviation": deviation(poses, kept),
             "tolerance": WPL_TOLERANCE,
+            "loiter_points": sum(1 for s in (seconds or []) if s > 0.0),
             # Otopilot GOSTERGE hizi istiyor, planlayici GERCEK hizla
             # calisiyor; ikisi kotla ayrisiyor ve arada cevirmek
             # kullaniciya birakilirsa unutuluyor.
@@ -589,6 +738,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_static("index.html")
         elif route == "/api/coverage":
             self._send_json(coverage_payload())
+        elif route == "/api/wind":
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                lat = float(query.get("lat", [""])[0])
+                lon = float(query.get("lon", [""])[0])
+            except (IndexError, ValueError):
+                self._send_json({"ok": False,
+                                 "message": "lat ve lon gerekli"}, 400)
+                return
+            # Ag hatasi 400 DEGIL: istek gecerliydi, ulasilamayan taraf
+            # disarisi. Arayuz mesaji gosterip elle girmeye donuyor.
+            self._send_json(forecast_payload(lat, lon))
         else:
             self._send_static(route.lstrip("/"))
 
