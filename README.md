@@ -16,7 +16,7 @@ builds every segment with **Dubins airplane** geometry — either a straight lin
 or the tightest arc the bank angle allows — and assigns an altitude that keeps
 the aircraft clear of the ground.
 
-A 2026 summer autopilot internship project.
+
 
 > **Note on the interface language.** The application's interface is in Turkish.
 > Where this document refers to a control, it gives the on-screen label in
